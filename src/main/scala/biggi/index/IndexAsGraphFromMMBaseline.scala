@@ -1,9 +1,9 @@
 package biggi.index
 
 import org.apache.commons.logging.LogFactory
-import java.io.{FileWriter, FileInputStream, File}
+import java.io.{FileInputStream, File}
 import java.util.zip.GZIPInputStream
-import biggi.util.{MMCandidate, MMUtterance, MachineOutputParser}
+import biggi.util.{BiggiFactory, MMCandidate, MMUtterance, MachineOutputParser}
 import scala.io.Source
 
 import java.util.Properties
@@ -12,9 +12,8 @@ import biggi.enhancer.clearnlp.FullClearNlpPipeline
 import com.thinkaurelius.titan.core.{TitanGraph, TitanFactory}
 import biggi.model.{PosTag, AnnotatedText}
 import biggi.model.annotation.{DepTag, Token, UmlsConcept, OntologyEntityMention}
-import com.tinkerpop.blueprints.{Edge, Direction, Vertex}
+import com.tinkerpop.blueprints.{Direction}
 import scala.collection.JavaConversions._
-import org.apache.commons.configuration.BaseConfiguration
 import com.tinkerpop.blueprints.Query.Compare
 import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.Duration
@@ -69,18 +68,11 @@ object IndexAsGraphFromMMBaseline {
         val parser = new MachineOutputParser
 
         //TITAN init
-        val titanConf = new BaseConfiguration()
-        titanConf.setProperty("storage.directory",new File(indexDir,"standard").getAbsolutePath)
-        titanConf.setProperty("storage.index.search.backend","lucene")
-        titanConf.setProperty("storage.index.search.directory",new File(indexDir,"searchindex").getAbsolutePath)
+        val titanConf = BiggiFactory.getGraphConfiguration(indexDir)
 
         val graph = TitanFactory.open(titanConf)
         if(newGraph) {
-            graph.makeType().name("cui").dataType(classOf[String]).indexed(classOf[Vertex]).graphUnique().makePropertyKey()
-            graph.makeType().name("semtypes").dataType(classOf[String]).indexed("search",classOf[Vertex]).makePropertyKey()
-            graph.makeType().name("uttIds").dataType(classOf[String]).indexed("search",classOf[Edge]).makePropertyKey()
-            graph.makeType().name("count").dataType(classOf[java.lang.Integer]).indexed(classOf[Edge]).makePropertyKey()
-            graph.commit()
+            BiggiFactory.initGraph(graph)
         } else
             processedUtts = graph.getEdges.flatMap(e => {
                e.getProperty[String]("uttIds").split(",")
@@ -100,9 +92,6 @@ object IndexAsGraphFromMMBaseline {
 
                 if(line.equals("'EOU'.")) {
                     try {
-                        val fw = new FileWriter(new File("shit"))
-                        fw.write(currentUtterance)
-                        fw.close()
                         val utterance = utteranceRegex.findFirstIn(currentUtterance).getOrElse("0.0.0")
                         val id = utterance.substring(utterance.indexOf('\'')+1,utterance.lastIndexOf('\''))
 

@@ -8,6 +8,7 @@ import com.tinkerpop.blueprints.Query.Compare
 import scala.collection.JavaConversions._
 import org.apache.commons.logging.LogFactory
 import com.tinkerpop.blueprints.{Vertex, Direction}
+import biggi.util.BiggiFactory
 
 /**
  * @author  dirk
@@ -23,10 +24,7 @@ object IndexUmlsRelFromTsvToGraph {
 
         val graphDir = new File(args(1))
 
-        val conf = new BaseConfiguration()
-        conf.setProperty("storage.directory",new File(graphDir,"standard").getAbsolutePath)
-        conf.setProperty("storage.index.search.backend","lucene")
-        conf.setProperty("storage.index.search.directory",new File(graphDir,"searchindex").getAbsolutePath)
+        val conf = BiggiFactory.getGraphConfiguration(graphDir)
 
         val graph = TitanFactory.open(conf)
 
@@ -63,7 +61,7 @@ object IndexUmlsRelFromTsvToGraph {
                 }
 
                 //if(!from.getEdges(Direction.OUT).exists(e => e.getLabel == rel && e.getVertex(Direction.IN) == to )) {
-                val edge = graph.addEdge(null, from, to, rel)
+                val edge = graph.addEdge(null, to, from, rel)     // umls has it the wrong way round
                 edge.setProperty("uttIds", "umls")
                 edge.setProperty("count", 1)
                 //}

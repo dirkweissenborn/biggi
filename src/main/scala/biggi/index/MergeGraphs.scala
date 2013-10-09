@@ -7,6 +7,7 @@ import com.tinkerpop.blueprints.{Edge, Direction, Vertex}
 import scala.collection.JavaConversions._
 import com.tinkerpop.blueprints.Query.Compare
 import org.apache.commons.logging.LogFactory
+import biggi.util.BiggiFactory
 
 /**
  * @author dirk
@@ -43,25 +44,15 @@ object MergeGraphs {
             deleteDir(outDir)
         }
 
-        val titanConf = new BaseConfiguration()
-        titanConf.setProperty("storage.directory",new File(outDir,"standard").getAbsolutePath)
-        titanConf.setProperty("storage.index.search.backend","lucene")
-        titanConf.setProperty("storage.index.search.directory",new File(outDir,"searchindex").getAbsolutePath)
+        val titanConf = BiggiFactory.getGraphConfiguration(outDir)
 
         val bigGraph = TitanFactory.open(titanConf)
         if(newGraph) {
-            bigGraph.makeType().name("cui").dataType(classOf[String]).indexed(classOf[Vertex]).graphUnique().makePropertyKey()
-            bigGraph.makeType().name("semtypes").dataType(classOf[String]).indexed("search",classOf[Vertex]).makePropertyKey()
-            bigGraph.makeType().name("uttIds").dataType(classOf[String]).indexed("search",classOf[Edge]).makePropertyKey()
-            bigGraph.makeType().name("count").dataType(classOf[java.lang.Integer]).indexed(classOf[Edge]).makePropertyKey()
-            bigGraph.commit()
+           BiggiFactory.initGraph(bigGraph)
         }
 
         inDir.listFiles().foreach(indexDir => {
-            val smallConf = new BaseConfiguration()
-            smallConf.setProperty("storage.directory",new File(indexDir,"standard").getAbsolutePath)
-            smallConf.setProperty("storage.index.search.backend","lucene")
-            smallConf.setProperty("storage.index.search.directory",new File(indexDir,"searchindex").getAbsolutePath)
+            val smallConf = BiggiFactory.getGraphConfiguration(indexDir)
 
             val smallGraph = TitanFactory.open(smallConf)
 

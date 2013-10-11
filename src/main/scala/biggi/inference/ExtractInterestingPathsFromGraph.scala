@@ -23,6 +23,8 @@ object ExtractInterestingPathsFromGraph {
         val maxResults = args(4).toInt
 
         val conf = BiggiFactory.getGraphConfiguration(graphDir)
+        conf.setProperty("storage.transactions","false")
+
         val graph = TitanFactory.open(conf)
 
         val from = graph.query().has("cui",cui1).limit(1).vertices().head
@@ -37,8 +39,10 @@ object ExtractInterestingPathsFromGraph {
         var result = List[List[Element]]()
 
         val start = System.currentTimeMillis()
+        var time:Long = 0
+        val maxTime = 60*1000*10
 
-        while(!priorityQueue.isEmpty && result.size < maxResults) {
+        while(!priorityQueue.isEmpty && result.size < maxResults && time < maxTime) {
             val (partialPath, score) = priorityQueue.dequeue()
             val lastVertex = partialPath.head.asInstanceOf[Vertex]
 
@@ -65,9 +69,23 @@ object ExtractInterestingPathsFromGraph {
                     }
                 })
             }
+            time = System.currentTimeMillis() - start
         }
 
-        println("Query time: "+(System.currentTimeMillis() - start)+" milliseconds")
+        priorityQueue.foreach {
+            case (path,score) => {
+                if(path.head.asInstanceOf[Vertex].getId.equals(to.getId)) {
+                    result ::= path.reverse
+                    var prevVertex :Vertex = null
+                    println(result.head.map(_ match {
+                        case v:Vertex => prevVertex = v; v.getProperty("cui")
+                        case e:Edge => e.getLabel + { if (e.getVertex(Direction.IN).getId == prevVertex.getId) "^-1" else "" }
+                    }).reduce(_+" , "+_))
+                }
+            }
+        }
+
+        println("Query time: "+time+" milliseconds")
 
        /* result.foreach(p => println(p.map(_ match {
             case v:Vertex => prevVertex = v; v.getProperty("cui")

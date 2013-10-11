@@ -1,9 +1,8 @@
 package biggi.index
 
 import java.io.File
-import org.apache.commons.configuration.BaseConfiguration
 import com.thinkaurelius.titan.core.TitanFactory
-import com.tinkerpop.blueprints.{Edge, Direction, Vertex}
+import com.tinkerpop.blueprints.{Direction}
 import scala.collection.JavaConversions._
 import com.tinkerpop.blueprints.Query.Compare
 import org.apache.commons.logging.LogFactory
@@ -45,15 +44,20 @@ object MergeGraphs {
         }
 
         val titanConf = BiggiFactory.getGraphConfiguration(outDir)
+        //titanConf.setProperty("storage.batch-loading","true")
 
         val bigGraph = TitanFactory.open(titanConf)
         if(newGraph) {
            BiggiFactory.initGraph(bigGraph)
         }
 
-        inDir.listFiles().foreach(indexDir => {
-            val smallConf = BiggiFactory.getGraphConfiguration(indexDir)
+        LOG.info("Merging into: "+ outDir.getAbsolutePath)
 
+        inDir.listFiles().foreach(indexDir => {
+            LOG.info("Merging: "+indexDir.getAbsolutePath)
+            val smallConf = BiggiFactory.getGraphConfiguration(indexDir)
+            smallConf.setProperty("storage.transactions","false")
+            smallConf.setProperty("storage.read-only","true")
             val smallGraph = TitanFactory.open(smallConf)
 
             smallGraph.query().vertices().iterator().foreach(fromSmall => {
@@ -72,7 +76,7 @@ object MergeGraphs {
 
                 fromSmall.getEdges(Direction.OUT).iterator().foreach(e => {
                     val toSmall = e.getVertex(Direction.IN)
-                    if(!fromSmall.equals(toSmall)) {
+                    if(!fromSmall.getId.equals(toSmall.getId)) {
                         val toCui = toSmall.getProperty[String]("cui")
 
                         val newIds = e.getProperty[String]("uttIds")
@@ -90,17 +94,17 @@ object MergeGraphs {
                             t
                         }
 
-                        from.getEdges(Direction.OUT, rel).iterator().find(_.getVertex(Direction.IN) == to) match {
+                        from.getEdges(Direction.OUT, rel).find(_.getVertex(Direction.IN) == to) match {
                             case Some(edge) => {
                                 try {
-                                    if(edge.getLabel == "hmod -> contain:VB -> pobj")
-                                        edge
                                     val ids = edge.getProperty[String]("uttIds")
-                                    edge.setProperty("count", edge.getProperty[java.lang.Integer]("count") + count)
-                                    edge.setProperty("uttIds", ids + "," + newIds)
+                                    if(!ids.contains(newIds)) {
+                                        edge.setProperty("count", edge.getProperty[java.lang.Integer]("count") + count)
+                                        edge.setProperty("uttIds", ids + "," + newIds)
+                                    }
                                 }
                                 catch {
-                                    case e: Exception => LOG.warn("Could not merge edge: "+ edge.getLabel)
+                                    case e: Throwable => LOG.warn("Could not merge edge: "+ edge.getLabel)
                                 }
                             }
                             case None => {
@@ -116,6 +120,8 @@ object MergeGraphs {
             bigGraph.commit()
         })
         bigGraph.shutdown()
+        LOG.info("DONE!")
+        System.exit(0)
     }
 
 }

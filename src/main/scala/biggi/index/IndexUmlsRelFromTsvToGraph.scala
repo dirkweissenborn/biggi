@@ -2,13 +2,13 @@ package biggi.index
 
 import java.io.File
 import scala.io.Source
-import org.apache.commons.configuration.BaseConfiguration
 import com.thinkaurelius.titan.core.TitanFactory
 import com.tinkerpop.blueprints.Query.Compare
 import scala.collection.JavaConversions._
 import org.apache.commons.logging.LogFactory
-import com.tinkerpop.blueprints.{Vertex, Direction}
+import com.tinkerpop.blueprints.{Vertex}
 import biggi.util.BiggiFactory
+import scala.collection.mutable
 
 /**
  * @author  dirk
@@ -25,40 +25,58 @@ object IndexUmlsRelFromTsvToGraph {
         val graphDir = new File(args(1))
 
         val conf = BiggiFactory.getGraphConfiguration(graphDir)
-
         val graph = TitanFactory.open(conf)
 
         var counter = 0
         var fromCui = ""
         var from:Vertex = null
 
+        val cuiIdMap = mutable.Map[String,AnyRef]()
+
         Source.fromFile(tsvFile).getLines().foreach(line => {
             val Array(cui1,toCui,rel) = line.split("\t",3)
 
             if(allowedRelations.contains(rel)) {
                 if(fromCui != cui1) {
-                    val it1 = graph.query.has("cui", Compare.EQUAL, cui1).limit(1).vertices()
+                    fromCui = cui1
+
+                    val fromId = cuiIdMap.getOrElse(cui1,null)
 
                     from =
-                        if (!it1.isEmpty)
-                            it1.head
-                        else {
-                            val f = graph.addVertex(null)
-                            f.setProperty("cui", cui1)
-                            f
+                        if(fromId == null) {
+                            val it1 = graph.query.has("cui", Compare.EQUAL, cui1).limit(1).vertices()
+                            if (!it1.isEmpty) {
+                                cuiIdMap += cui1 -> it1.head.getId
+                                it1.head
+                            }
+                            else {
+                                val f = graph.addVertex(null)
+                                f.setProperty("cui", cui1)
+                                cuiIdMap += cui1 -> f.getId
+                                f
+                            }
                         }
-
-                    fromCui = cui1
+                        else
+                            graph.getVertex(fromId)
                 }
 
-                val it2 = graph.query.has("cui", Compare.EQUAL, toCui).limit(1).vertices()
-                val to = if (!it2.isEmpty)
-                    it2.head
-                else {
-                    val t = graph.addVertex(null)
-                    t.setProperty("cui", toCui)
-                    t
-                }
+                val toId = cuiIdMap.getOrElse(toCui,null)
+                val to =
+                    if(toId == null) {
+                        val it2 = graph.query.has("cui", Compare.EQUAL, toCui).limit(1).vertices()
+                        if (!it2.isEmpty) {
+                            cuiIdMap += toCui -> it2.head.getId
+                            it2.head
+                        }
+                        else {
+                            val t = graph.addVertex(null)
+                            t.setProperty("cui", toCui)
+                            cuiIdMap += toCui -> t.getId
+                            t
+                        }
+                    }
+                    else
+                        graph.getVertex(toId)
 
                 //if(!from.getEdges(Direction.OUT).exists(e => e.getLabel == rel && e.getVertex(Direction.IN) == to )) {
                 val edge = graph.addEdge(null, to, from, rel)     // umls has it the wrong way round
@@ -76,6 +94,8 @@ object IndexUmlsRelFromTsvToGraph {
 
         graph.commit()
         graph.shutdown()
+        LOG.info("DONE!")
+        System.exit(0)
     }
 
     private val allowedRelations = Set("germ_origin_of",
@@ -87,7 +107,6 @@ object IndexUmlsRelFromTsvToGraph {
         "cell_shape_of",
         "imaged_anatomy_has_procedure",
         "allele_absent_from_wild-type_chromosomal_location",
-        "qualifier_applies_to",
         "has_germ_origin",
         "procedure_has_imaged_anatomy",
         "continuation_branch_of",
@@ -174,11 +193,7 @@ object IndexUmlsRelFromTsvToGraph {
         "chemical_or_drug_initiates_biological_process",
         "biological_process_has_initiator_chemical_or_drug",
         "has_route_of_administration",
-        "role_has_range",
-        "role_has_domain",
-        "kind_is_range_of",
         "surrounds",
-        "has_version",
         "disease_may_have_normal_cell_origin",
         "biological_process_has_initiator_process",
         "process_initiates_biological_process",
@@ -307,7 +322,6 @@ object IndexUmlsRelFromTsvToGraph {
         "has_nerve_supply",
         "disease_mapped_to_gene",
         "disease_is_stage",
-        "included_in",
         "includes",
         "has_finding_informer",
         "disease_has_associated_gene",
@@ -322,7 +336,6 @@ object IndexUmlsRelFromTsvToGraph {
         "uses_substance",
         "eo_anatomy_is_associated_with_eo_disease",
         "has_specimen",
-        "see",
         "has_quantified_form",
         "has_subject_relationship_context",
         "has_temporal_context",
@@ -394,13 +407,10 @@ object IndexUmlsRelFromTsvToGraph {
         "has_physiologic_effect",
         "interprets",
         "has_location",
-        "has_suffix",
         "clinically_associated_with",
         "has_access",
         "may_be_a",
-        "has_print_name",
         "has_direct_procedure_site",
-        "has_mapping_qualifier",
         "disease_has_abnormal_cell",
         "contraindicated_with_disease",
         "has_product_component",

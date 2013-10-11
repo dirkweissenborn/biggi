@@ -132,6 +132,8 @@ object IndexAsGraphFromMMBaseline {
         Await.result(future2,Duration.Inf)
         graph.shutdown()
         is.close()
+        LOG.info("DONE!")
+        System.exit(0)
     }
 
     var processedUtts = Set[String]()
@@ -145,12 +147,17 @@ object IndexAsGraphFromMMBaseline {
             val annotations = selectAnnotations(utt)
 
             if(annotations.size > 1) {
-                val annotatedText = new AnnotatedText(id,text)
-                depParser.enhance(annotatedText)
+                try {
+                    val annotatedText = new AnnotatedText(id,text)
+                    depParser.enhance(annotatedText)
 
-                if(future2 ne null)
-                    Await.result(future2,Duration.Inf)
-                future2 = Future{writeToGraph(annotatedText, text, annotations, graph)}
+                    if(future2 ne null)
+                        Await.result(future2,Duration.Inf)
+                    future2 = Future{writeToGraph(annotatedText, text, annotations, graph)}
+                }
+                catch {
+                    case e:Throwable => LOG.error(e.getMessage+"\nSkipping it!")
+                }
             }
         }
     }

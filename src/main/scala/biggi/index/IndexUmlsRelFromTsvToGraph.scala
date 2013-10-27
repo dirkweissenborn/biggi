@@ -9,6 +9,7 @@ import org.apache.commons.logging.LogFactory
 import com.tinkerpop.blueprints.{Vertex}
 import biggi.util.BiggiFactory
 import scala.collection.mutable
+import com.tinkerpop.blueprints.util.wrappers.batch.{VertexIDType, BatchGraph}
 
 /**
  * @author  dirk
@@ -23,77 +24,53 @@ object IndexUmlsRelFromTsvToGraph {
         val tsvFile = new File(args(0))
 
         val graphDir = new File(args(1))
+        println("Overriding output directory!")
+        def deleteDir(dir:File) {
+            dir.listFiles().foreach(f => {
+                if (f.isDirectory) {
+                    deleteDir(f)
+                    f.delete()
+                }
+                else
+                    f.delete()
+            })
+        }
+        if(!graphDir.mkdirs())
+            deleteDir(graphDir)
 
         val conf = BiggiFactory.getGraphConfiguration(graphDir)
         val graph = TitanFactory.open(conf)
+        
+        BiggiFactory.initGraph(graph)
 
         var counter = 0
-        var fromCui = ""
-        var from:Vertex = null
 
-        val cuiIdMap = mutable.Map[String,AnyRef]()
+        val bGraph = new BatchGraph(graph, VertexIDType.STRING, 1000)
 
         Source.fromFile(tsvFile).getLines().foreach(line => {
-            val Array(cui1,toCui,rel) = line.split("\t",3)
+            val Array(toCui,fromCui,rel) = line.split("\t",3)
 
             if(allowedRelations.contains(rel)) {
-                if(fromCui != cui1) {
-                    fromCui = cui1
+                var from = bGraph.getVertex(fromCui)
+                if(from == null)
+                    from = bGraph.addVertex(fromCui,"cui",fromCui)
 
-                    val fromId = cuiIdMap.getOrElse(cui1,null)
+                var to = bGraph.getVertex(toCui)
+                if(to == null)
+                    to = bGraph.addVertex(toCui,"cui",toCui)
 
-                    from =
-                        if(fromId == null) {
-                            val it1 = graph.query.has("cui", Compare.EQUAL, cui1).limit(1).vertices()
-                            if (!it1.isEmpty) {
-                                cuiIdMap += cui1 -> it1.head.getId
-                                it1.head
-                            }
-                            else {
-                                val f = graph.addVertex(null)
-                                f.setProperty("cui", cui1)
-                                cuiIdMap += cui1 -> f.getId
-                                f
-                            }
-                        }
-                        else
-                            graph.getVertex(fromId)
-                }
-
-                val toId = cuiIdMap.getOrElse(toCui,null)
-                val to =
-                    if(toId == null) {
-                        val it2 = graph.query.has("cui", Compare.EQUAL, toCui).limit(1).vertices()
-                        if (!it2.isEmpty) {
-                            cuiIdMap += toCui -> it2.head.getId
-                            it2.head
-                        }
-                        else {
-                            val t = graph.addVertex(null)
-                            t.setProperty("cui", toCui)
-                            cuiIdMap += toCui -> t.getId
-                            t
-                        }
-                    }
-                    else
-                        graph.getVertex(toId)
-
-                //if(!from.getEdges(Direction.OUT).exists(e => e.getLabel == rel && e.getVertex(Direction.IN) == to )) {
-                val edge = graph.addEdge(null, to, from, rel)     // umls has it the wrong way round
-                edge.setProperty("uttIds", "umls")
-                edge.setProperty("count", 1)
-                //}
+                bGraph.addEdge(null,from,to,rel,"uttIds","umls","count",new java.lang.Integer(1))
             }
 
             counter += 1
             if(counter % 100000 == 0) {
-                graph.commit()
+                bGraph.commit()
                 LOG.info(counter + " relations processed!")
             }
         })
 
-        graph.commit()
-        graph.shutdown()
+        bGraph.commit()
+        bGraph.shutdown()
         LOG.info("DONE!")
         System.exit(0)
     }

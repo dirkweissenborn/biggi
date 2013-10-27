@@ -7,6 +7,7 @@ import scala.collection.JavaConversions._
 import com.tinkerpop.blueprints.Query.Compare
 import org.apache.commons.logging.LogFactory
 import biggi.util.BiggiFactory
+import scala.collection.mutable
 
 /**
  * @author dirk
@@ -45,6 +46,7 @@ object MergeGraphs {
 
         val titanConf = BiggiFactory.getGraphConfiguration(outDir)
         //titanConf.setProperty("storage.batch-loading","true")
+        //titanConf.setProperty("storage.transactions","false")
 
         val bigGraph = TitanFactory.open(titanConf)
         if(newGraph) {
@@ -53,6 +55,7 @@ object MergeGraphs {
 
         LOG.info("Merging into: "+ outDir.getAbsolutePath)
 
+        val cuiIdMap = mutable.Map[String,AnyRef]()
         inDir.listFiles().foreach(indexDir => {
             LOG.info("Merging: "+indexDir.getAbsolutePath)
             val smallConf = BiggiFactory.getGraphConfiguration(indexDir)
@@ -62,16 +65,25 @@ object MergeGraphs {
 
             smallGraph.query().vertices().iterator().foreach(fromSmall => {
                 val fromCui = fromSmall.getProperty[String]("cui")
-                val it1 = bigGraph.query.has("cui", Compare.EQUAL, fromCui).limit(1).vertices()
+
+                val fromId = cuiIdMap.getOrElse(fromCui,null)
+
                 val from =
-                    if (!it1.isEmpty)
-                        it1.head
+                    if(fromId != null)
+                        bigGraph.getVertex(fromId)
                     else {
-                        val f = bigGraph.addVertex(null)
-                        f.setProperty("cui", fromCui)
-                        val fromSemTypes = fromSmall.getProperty[String]("semtypes")
-                        f.setProperty("semtypes", fromSemTypes)
-                        f
+                        val it1 = if(!newGraph) bigGraph.query.has("cui", Compare.EQUAL, fromCui).limit(1).vertices() else null
+                        if (!newGraph && !it1.isEmpty)
+                            it1.head
+                        else {
+                            val f = bigGraph.addVertex(null)
+                            f.setProperty("cui", fromCui)
+                            val fromSemTypes = fromSmall.getProperty[String]("semtypes")
+                            if(fromSemTypes ne null)
+                                f.setProperty("semtypes", fromSemTypes)
+                            cuiIdMap += fromCui -> f.getId
+                            f
+                        }
                     }
 
                 fromSmall.getEdges(Direction.OUT).iterator().foreach(e => {
@@ -82,17 +94,27 @@ object MergeGraphs {
                         val newIds = e.getProperty[String]("uttIds")
                         val count = e.getProperty[java.lang.Integer]("count")
                         val rel = e.getLabel
-                        val it2 = bigGraph.query.has("cui", Compare.EQUAL, toCui).limit(1).vertices()
 
-                        val to = if (!it2.isEmpty)
-                            it2.head
-                        else {
-                            val t = bigGraph.addVertex(null)
-                            t.setProperty("cui", toCui)
-                            val toSemTypes = toSmall.getProperty[String]("semtypes")
-                            t.setProperty("semtypes", toSemTypes)
-                            t
-                        }
+                        val toId = cuiIdMap.getOrElse(toCui,null)
+
+                        val to =
+                            if(toId != null)
+                                bigGraph.getVertex(toId)
+                            else {
+                                val it2 = if(!newGraph) bigGraph.query.has("cui", Compare.EQUAL, toCui).limit(1).vertices()  else null
+
+                                if (!newGraph && !it2.isEmpty)
+                                    it2.head
+                                else {
+                                    val t = bigGraph.addVertex(null)
+                                    t.setProperty("cui", toCui)
+                                    val toSemTypes = toSmall.getProperty[String]("semtypes")
+                                    if(toSemTypes ne null)
+                                        t.setProperty("semtypes", toSemTypes)
+                                    cuiIdMap += toCui -> t.getId
+                                    t
+                                }
+                            }
 
                         from.getEdges(Direction.OUT, rel).find(_.getVertex(Direction.IN) == to) match {
                             case Some(edge) => {

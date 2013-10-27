@@ -471,7 +471,10 @@ object IndexAsGraphFromMMBaseline {
         def printToken(token:Token, deptag:DepTag) = {
             var result = token.lemma
             if(token.posTag.matches(PosTag.ANYVERB_PATTERN)) {
-                result += ":VB"
+                if(token.posTag == PosTag.Verb_gerund_or_present_participle)
+                    result += ":VBG"
+                else
+                    result += ":VB"
                 var auxTokens = token.sentence.getTokens.filter(t => t.depTag.dependsOn == token.position && t.depTag.tag.matches("neg|acomp")&& !path.exists(_._1 == t))
                 auxTokens = auxTokens.filterNot(path.contains).filter(_.posTag.matches(PosTag.ANYADJECTIVE_PATTERN+"|"+PosTag.ANYVERB_PATTERN+"|"+PosTag.ANYNOUN_PATTERN))
                 if(auxTokens.size > 0)

@@ -40,7 +40,7 @@ object ExtractInterestingPathsFromGraph {
 
         val start = System.currentTimeMillis()
         var time:Long = 0
-        val maxTime = 60*1000*10
+        val maxTime = 60*1000
 
         while(!priorityQueue.isEmpty && result.size < maxResults && time < maxTime) {
             val (partialPath, score) = priorityQueue.dequeue()

@@ -1,7 +1,7 @@
 package biggi.index
 
 import org.apache.commons.logging.LogFactory
-import java.io.{FileInputStream, File}
+import java.io.{FileWriter, PrintWriter, FileInputStream, File}
 import java.util.zip.GZIPInputStream
 import biggi.util.{BiggiFactory, MMCandidate, MMUtterance, MachineOutputParser}
 import scala.io.Source
@@ -11,13 +11,17 @@ import biggi.enhancer.TextEnhancer
 import biggi.enhancer.clearnlp.FullClearNlpPipeline
 import com.thinkaurelius.titan.core.{TitanGraph, TitanFactory}
 import biggi.model.{PosTag, AnnotatedText}
-import biggi.model.annotation.{DepTag, Token, UmlsConcept, OntologyEntityMention}
-import com.tinkerpop.blueprints.{Direction}
+import biggi.model.annotation._
+import com.tinkerpop.blueprints.{Vertex, Direction}
 import scala.collection.JavaConversions._
 import com.tinkerpop.blueprints.Query.Compare
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{ExecutionContext, Await, Future}
 import scala.concurrent.duration.Duration
-import scala.concurrent.ExecutionContext.Implicits.global
+import java.util.concurrent.{TimeoutException, TimeUnit}
+import biggi.model.annotation.DepTag
+import scala.Some
+import biggi.util.MMCandidate
+import biggi.util.MMUtterance
 
 /**
  * @author dirk
@@ -25,11 +29,30 @@ import scala.concurrent.ExecutionContext.Implicits.global
  *          Time: 2:00 PM
  */
 object IndexAsGraphFromMMBaseline {
+    //ugly HACK
+    class MyCustomExecutionContext extends AnyRef with ExecutionContext {
+        @volatile var lastThread: Option[Thread] = None
+        override def execute(runnable: Runnable): Unit = {
+            ExecutionContext.Implicits.global.execute(new Runnable() {
+                override def run() {
+                    lastThread = Some(Thread.currentThread)
+                    runnable.run()
+                }
+            })
+        }
+        override def reportFailure(t: Throwable): Unit = ???
+    }
+
+    implicit val exec = new MyCustomExecutionContext()
+
 
     private val LOG = LogFactory.getLog(getClass)
 
-    var mmoToXml = ""
-    var depParser:TextEnhancer = null
+    private var mmoToXml = ""
+    private var depParser:TextEnhancer = null
+
+    private final var cuiIdMap =  Map[String,AnyRef]()
+
 
     def main(args:Array[String]) {
 
@@ -69,14 +92,22 @@ object IndexAsGraphFromMMBaseline {
 
         //TITAN init
         val titanConf = BiggiFactory.getGraphConfiguration(indexDir)
+        titanConf.setProperty("storage.buffer-size","2048")
+        titanConf.setProperty("ids.block-size","500000")
 
         val graph = TitanFactory.open(titanConf)
         if(newGraph) {
             BiggiFactory.initGraph(graph)
         } else
-            processedUtts = graph.getEdges.flatMap(e => {
-               e.getProperty[String]("uttIds").split(",")
+            processedUtts = graph.getVertices(BiggiFactory.TYPE,"utterance").map(e => {
+               e.getProperty[String](BiggiFactory.UI)
             }).toSet
+
+        { //write configuration
+            val pw = new PrintWriter(new FileWriter(new File(indexDir,"graph.config")))
+            pw.println(BiggiFactory.printGraphConfiguration(indexDir))
+            pw.close()
+        }
 
         LOG.info(inputFile+": Processing: "+inputFile)
 
@@ -99,7 +130,12 @@ object IndexAsGraphFromMMBaseline {
                             val mmUtterance = parser.parse(currentUtterance,false)
 
                             if(future ne null)
-                                Await.result(future,Duration.Inf)
+                                try {
+                                    Await.result(future,Duration(30,TimeUnit.SECONDS))
+                                } catch {
+                                    case timeout: TimeoutException =>
+                                        (0 until 2).foreach { _ => exec.lastThread.get.stop() }
+                                }
                             if(mmUtterance ne null) {
                                 future = Future { extractConnections(mmUtterance,graph) }
                             }
@@ -166,85 +202,115 @@ object IndexAsGraphFromMMBaseline {
     def writeToGraph(annotatedText: AnnotatedText, text: String, annotations: Map[(Int, Int), List[MMCandidate]], graph: TitanGraph) {
         val id = annotatedText.id
         var offset = 0
+
         try {
-            annotations.toSeq.sortBy(_._1._1).foreach {
-                case ((start, end), candidates) => {
-                    val entity = AnnotatedText.cleanText(text.substring(start, end))
-                    val newStart = annotatedText.text.indexOf(entity, offset)
-                    val newEnd = newStart + entity.length
-                    offset = newStart + 1
-                    val cands = candidates.filter(c => allowCandidate(c, entity))
-                    if (cands.size > 0 &&
-                        annotatedText.getAnnotationsBetween[Token](newStart, newEnd).exists(_.posTag.matches(PosTag.ANYNOUN_PATTERN)))
-                        new OntologyEntityMention(
-                            newStart,
-                            newEnd,
-                            annotatedText,
-                            candidates.map(c => new UmlsConcept(c.cui, entity, Set[String](), c.semtypes.toSet, Set[String](), c.score)))
-                }
-            }
+            if(graph.query().has(BiggiFactory.UI, Compare.EQUAL, id).vertices().isEmpty) {
+                val uttVertex = graph.addVertex(null)
+                uttVertex.setProperty(BiggiFactory.UI,id)
+                uttVertex.setProperty(BiggiFactory.TEXT,annotatedText.text)
+                uttVertex.setProperty(BiggiFactory.TYPE,"utterance")
 
-            annotatedText.getAnnotations[OntologyEntityMention].foreach(m1 => {
-                annotatedText.getAnnotations[OntologyEntityMention].foreach(m2 => {
-                    if (m1.begin < m2.begin) {
-                        cleanPath(getDepPath(annotatedText, m1, m2).getOrElse(List[Token]())) match {
-                            case Some(path) => {
-                                val rel = printPath(path)
-                                m1.ontologyConcepts.foreach(c1 => {
-                                    m2.ontologyConcepts.foreach(c2 => {
-                                        val it1 = graph.query.has("cui", Compare.EQUAL, c1.conceptId).limit(1).vertices()
-                                        val it2 = graph.query.has("cui", Compare.EQUAL, c2.conceptId).limit(1).vertices()
-
-                                        val from =
-                                            if (!it1.isEmpty)
-                                                it1.head
-                                            else {
-                                                val f = graph.addVertex(null)
-                                                f.setProperty("cui", c1.conceptId)
-                                                f.setProperty("semtypes", c1.asInstanceOf[UmlsConcept].semanticTypes.filter(s => selectedSemtypes.contains(s)).mkString(","))
-                                                f
-                                            }
-
-                                        val to = if (!it2.isEmpty)
-                                            it2.head
-                                        else {
-                                            val t = graph.addVertex(null)
-                                            t.setProperty("cui", c2.conceptId)
-                                            t.setProperty("semtypes", c2.asInstanceOf[UmlsConcept].semanticTypes.filter(s => selectedSemtypes.contains(s)).mkString(","))
-                                            t
-                                        }
-
-                                        from.getEdges(Direction.OUT, rel).iterator().find(_.getVertex(Direction.IN) == to) match {
-                                            case Some(edge) => {
-                                                val ids = edge.getProperty[String]("uttIds").split(",")
-                                                if (!ids.contains(id)) {
-                                                    edge.setProperty("count", edge.getProperty[java.lang.Integer]("count") + 1)
-                                                    edge.setProperty("uttIds", ids.mkString(",") + "," + id)
-                                                }
-                                            }
-                                            case None => {
-                                                val edge = graph.addEdge(null, from, to, rel)
-                                                edge.setProperty("uttIds", id)
-                                                edge.setProperty("count", 1)
-                                            }
-                                        }
-                                    })
-                                })
-                            }
-                            case None =>
-                        }
-
+                annotations.toSeq.sortBy(_._1._1).foreach {
+                    case ((start, end), candidates) => {
+                        val entity = AnnotatedText.cleanText(text.substring(start, end))
+                        val newStart = annotatedText.text.indexOf(entity, offset)
+                        val newEnd = newStart + entity.length
+                        offset = newStart + 1
+                        val cands = candidates.filter(c => allowCandidate(c, entity))
+                        if (cands.size > 0 &&
+                            annotatedText.getAnnotationsBetween[Token](newStart, newEnd).exists(_.posTag.matches(PosTag.ANYNOUN_PATTERN)))
+                            new OntologyEntityMention(
+                                newStart,
+                                newEnd,
+                                annotatedText,
+                                cands.map(c => new UmlsConcept(c.cui, c.preferredName, Set[String](), c.semtypes.toSet, Set[String](), c.score)))
                     }
+                }
+
+                annotatedText.getAnnotations[OntologyEntityMention].foreach(m1 => {
+                    annotatedText.getAnnotations[OntologyEntityMention].foreach(m2 => {
+                        if (m1.begin < m2.begin) {
+                            val forbiddenAuxTokens = (m1.getTokens ++ m2.getTokens).toSet
+
+                            normalizePath(getDepPath(annotatedText, m1, m2).getOrElse(List[Token]())) match {
+                                case Some((path,reversed)) => {
+                                    /*/deprecated: posttaged sequence between labels with window size 3
+                                    val sentence = path.head._1.sentence
+                                    val posTaggedSequence = sentence.getTokens.
+                                        filter(t => t.position > m1.getTokens.last.position - 3 && t.position < m2.getTokens.head.position + 3 &&
+                                                    !m1.getTokens.contains(t) && !m2.getTokens.contains(t)).
+                                        map(t => {
+                                            var result = printOnlyToken(t) +"_" +t.posTag
+                                            if(t.position -1 == m1.getTokens.last.position)
+                                                result = "$1 " + result
+                                            if(t.position +1 == m2.getTokens.head.position)
+                                                result += " $2"
+                                            result
+                                        }).mkString(" ").replaceAll("[\"´`]","'").replaceAll("}",")").replaceAll("""\{""","(")*/
+
+                                    val rel = printPath(path,forbiddenAuxTokens)
+                                    val (fromM,toM) = if(reversed) (m2,m1) else (m1,m2)
+
+                                    fromM.ontologyConcepts.foreach(c1 => {
+                                        toM.ontologyConcepts.foreach(c2 => {
+                                            val fromId = cuiIdMap.get(c1.conceptId)
+                                            val from =  fromId match {
+                                                case Some(id) =>  graph.getVertex(id)
+                                                case None => addConceptAsVertex(graph, c1)
+                                            }
+
+                                            val toId = cuiIdMap.get(c2.conceptId)
+                                            val to =  toId match {
+                                                case Some(id) =>  graph.getVertex(id)
+                                                case None => addConceptAsVertex(graph, c2)
+                                            }
+
+                                            def addEdge(relation:String) {
+                                                if(relation.length > 0)
+                                                    from.getEdges(Direction.OUT, relation).iterator().find(_.getVertex(Direction.IN) == to) match {
+                                                        case Some(edge) => {
+                                                            val ids = edge.getProperty[String](BiggiFactory.SOURCE).split(",")
+                                                            if (!ids.contains(id)) {
+                                                                edge.setProperty(BiggiFactory.SOURCE, ids.mkString(",") + "," + id)
+                                                            }
+                                                        }
+                                                        case None => {
+                                                            val edge = graph.addEdge(null, from, to, relation)
+                                                            edge.setProperty(BiggiFactory.SOURCE, id)
+                                                        }
+                                                    }
+                                            }
+
+                                            addEdge(rel)
+                                            //addEdge(posTaggedSequence)
+                                        })
+                                    })
+                                }
+                                case None =>  //nothing to do
+                            }
+
+                        }
+                    })
                 })
-            })
+            }
         }
         catch {
-            case e: Exception => e.printStackTrace()
+            case e: Exception => LOG.error("Skipping error: "+e.getMessage)
         }
     }
 
+
+    private def addConceptAsVertex(graph: TitanGraph, c: OntologyConcept): Vertex = {
+        val v = graph.addVertex(null)
+        v.setProperty(BiggiFactory.UI, c.conceptId)
+        v.setProperty(BiggiFactory.TYPE, c.asInstanceOf[UmlsConcept].semanticTypes.filter(s => selectedSemtypes.contains(s)).mkString(","))
+        v.setProperty(BiggiFactory.TEXT, c.asInstanceOf[UmlsConcept].preferredLabel)
+        cuiIdMap += c.conceptId -> v.getId
+        v
+    }
+
     private val selectedSemtypes =
-        Set("amph","anim","arch","bact","bird","euka","fish","fngs","humn","mamm","plnt","rept","vtbt","virs", //Organisms
+        List("amph","anim","arch","bact","bird","euka","fish","fngs","humn","mamm","plnt","rept","vtbt","virs", //Organisms
             "acab","anab","bpoc","celc","cell","cgab","emst","ffas","gngm","tisu",  //anatomical structures
             "clnd",  //clinical drug
             "sbst","aapp","antb","bacs","bodm","bdsu","carb","chvf","chvs","chem","eico","elii","enzy","food", //Substances
@@ -257,13 +323,14 @@ object IndexAsGraphFromMMBaseline {
     private val stopSemTypes = Set("ftcn","qlco","qnco","idcn","inpr")
 
     def allowCandidate(cand : MMCandidate, coveredText:String):Boolean = {
-        if(cand.semtypes.exists(s => selectedSemtypes.contains(s))) {
+        val interSemTypes = cand.semtypes.intersect(selectedSemtypes)
+        if(interSemTypes.size>0) {
             if(coveredText.length < 2)
                 false
-            else if(cand.semtypes.contains("gngm")) {
+            else if(interSemTypes.contains("gngm") && interSemTypes.size < 2) {
                 //some really common words are annotated as genes, other normal words are proteins.
                 //Genes usually don't look like normal english words
-                if(coveredText.matches("[A-Z]?[a-z]+") || coveredText.toLowerCase == "ii") {
+                if(coveredText.matches("""[A-Z]?[a-z]+""") || coveredText.toLowerCase == "ii") {
                     false
                 }
                 else true
@@ -376,7 +443,7 @@ object IndexAsGraphFromMMBaseline {
         "imft","irda","inch","lipd","mamm","mnob","medd","nsba","nnon","orch","orgm",
         "opco","phsu","plnt","rcpt","rept","resd","strd","sbst","tisu","vtbt","virs","vita","sosy","dsyn")
 
-    def cleanPath(path: List[Token]):Option[List[(Token,DepTag)]] = {
+    def normalizePath(path: List[Token]):Option[(List[(Token,DepTag)], Boolean)] = {
         if(!path.isEmpty){
             var resultPath = path.map(t => (t,DepTag(t.depTag.tag,t.depTag.dependsOn)))
 
@@ -455,11 +522,16 @@ object IndexAsGraphFromMMBaseline {
                 //filter
                 resultPath = resultPath.filterNot(_._2.tag.matches("""punct|hyph"""))
 
+                //normalize
+                val reversed = resultPath.head._2.tag > resultPath.last._2.tag
+                if(reversed)
+                    resultPath = resultPath.reverse
+
                 if(resultPath.isEmpty || resultPath.head != startToken || resultPath.last != endToken ||
                     !resultPath.exists(_._1.posTag.matches(PosTag.ANYVERB_PATTERN)) || resultPath.size > 6)
                     None
                 else
-                    Some(resultPath)
+                    Some(resultPath,reversed)
             }
             else
                 None
@@ -467,34 +539,44 @@ object IndexAsGraphFromMMBaseline {
         else None
     }
 
-    def printPath(path: List[(Token,DepTag)]) = {
-        def printToken(token:Token, deptag:DepTag) = {
-            var result = token.lemma
-            if(token.posTag.matches(PosTag.ANYVERB_PATTERN)) {
-                if(token.posTag == PosTag.Verb_gerund_or_present_participle)
-                    result += ":VBG"
-                else
-                    result += ":VB"
-                var auxTokens = token.sentence.getTokens.filter(t => t.depTag.dependsOn == token.position && t.depTag.tag.matches("neg|acomp")&& !path.exists(_._1 == t))
-                auxTokens = auxTokens.filterNot(path.contains).filter(_.posTag.matches(PosTag.ANYADJECTIVE_PATTERN+"|"+PosTag.ANYVERB_PATTERN+"|"+PosTag.ANYNOUN_PATTERN))
-                if(auxTokens.size > 0)
-                    result += "("+auxTokens.map(_.lemma).mkString(" ")+")"
-            }
-            if(token.posTag.matches(PosTag.ANYNOUN_PATTERN)) {
-                result += ":" + deptag.tag
-                val auxTokens = token.sentence.getTokens
-                    .filter(t => t.depTag.dependsOn == token.position && !replaceSemtypes.contains(t.lemma) && t.depTag.tag.matches("amod|nn|neg") && !path.exists(_._1 == t))
-                    .filter(_.posTag.matches(PosTag.ANYADJECTIVE_PATTERN+"|"+PosTag.ANYVERB_PATTERN+"|"+PosTag.ANYNOUN_PATTERN))
-                if(auxTokens.size > 0)
-                    result += "("+auxTokens.map(_.lemma).mkString(" ")+")"
-            }
+
+    def printOnlyToken(token: Token): String = {
+        val result = if (token.posTag == PosTag.Cardinal_number) token.coveredText else token.lemma
+        result.replaceAll("""["'´`]""","")
+    }
+
+    def printPath(path: List[(Token,DepTag)], forbiddenAuxTokens:Set[Token]) = {
+        def printToken(token:Token)(deptag:DepTag = token.depTag):String = {
+            var result = printOnlyToken(token)
+
+            var auxTokens:List[Token] =
+                if(token.posTag.matches(PosTag.ANYVERB_PATTERN)) {
+                    if(token.posTag == PosTag.Verb_gerund_or_present_participle)
+                        result += ":VBG"
+                    else
+                        result += ":VB"
+                    token.sentence.getTokens.filter(t => t.depTag.dependsOn == token.position && (t.depTag.tag.matches("neg|acomp|oprd|aux") || t.lemma == "no"))
+
+                } else if(token.posTag.matches(PosTag.ANYNOUN_PATTERN)) {
+                    result += ":" + deptag.tag
+                    token.sentence.getTokens
+                        .filter(t => t.depTag.dependsOn == token.position && (t.depTag.tag.matches("amod|nn|neg") || t.lemma == "no"))
+                } else if(token.coveredText == "%") {
+                    token.sentence.getTokens
+                        .filter(t => t.depTag.dependsOn == token.position && t.depTag.tag.matches("num"))
+                } else List[Token]()
+
+            auxTokens = auxTokens.filter(t => !path.exists(_._1 == t) && !forbiddenAuxTokens.contains(t))
+
+            if(auxTokens.size > 0)
+                result += "("+auxTokens.map(t => printToken(t)()).mkString(" ")+")"
+
             result
         }
         val startToken = path.head
-
         val endToken = path.last
 
-        var result = startToken._2.tag
+        var result = { if(startToken._2.tag == "prep") "pobj -> "+printToken(startToken._1)() else startToken._2.tag }
         var last = startToken._1
         path.tail.dropRight(1).foreach(t => {
             if (last.depDepth < t._1.depDepth)
@@ -502,14 +584,14 @@ object IndexAsGraphFromMMBaseline {
             else
                 result += " -> "
 
-            result += printToken(t._1,t._2)
+            result += printToken(t._1)(t._2)
             last = t._1
         })
         if (last.depDepth < endToken._1.depDepth)
             result += " <- "
         else
             result += " -> "
-        result += endToken._2.tag
+        result += { if(endToken._2.tag == "prep") printToken(endToken._1)()+" <- pobj" else endToken._2.tag }
 
         result
     }

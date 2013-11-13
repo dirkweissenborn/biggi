@@ -10,7 +10,7 @@ import org.apache.commons.logging.LogFactory
  *          Date: 10/14/13
  *          Time: 5:40 PM
  */
-object MergeEdgeCounts {
+object MergeCounts {
 
     private final val LOG = LogFactory.getLog(this.getClass)
 

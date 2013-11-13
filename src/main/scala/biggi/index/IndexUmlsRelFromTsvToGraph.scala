@@ -1,8 +1,8 @@
 package biggi.index
 
-import java.io.File
+import java.io.{FileWriter, PrintWriter, File}
 import scala.io.Source
-import com.thinkaurelius.titan.core.TitanFactory
+import com.thinkaurelius.titan.core.{TitanEdge, TitanFactory}
 import com.tinkerpop.blueprints.Query.Compare
 import scala.collection.JavaConversions._
 import org.apache.commons.logging.LogFactory
@@ -10,6 +10,7 @@ import com.tinkerpop.blueprints.{Vertex}
 import biggi.util.BiggiFactory
 import scala.collection.mutable
 import com.tinkerpop.blueprints.util.wrappers.batch.{VertexIDType, BatchGraph}
+import scala.util.Random
 
 /**
  * @author  dirk
@@ -47,19 +48,27 @@ object IndexUmlsRelFromTsvToGraph {
 
         val bGraph = new BatchGraph(graph, VertexIDType.STRING, 1000)
 
+        { //write configuration
+            val pw = new PrintWriter(new FileWriter(new File(graphDir,"graph.config")))
+            pw.println(BiggiFactory.printGraphConfiguration(graphDir))
+            pw.close()
+        }
+
         Source.fromFile(tsvFile).getLines().foreach(line => {
             val Array(toCui,fromCui,rel) = line.split("\t",3)
 
             if(allowedRelations.contains(rel)) {
                 var from = bGraph.getVertex(fromCui)
                 if(from == null)
-                    from = bGraph.addVertex(fromCui,"cui",fromCui)
+                    from = bGraph.addVertex(fromCui,BiggiFactory.UI,fromCui)
 
                 var to = bGraph.getVertex(toCui)
                 if(to == null)
-                    to = bGraph.addVertex(toCui,"cui",toCui)
+                    to = bGraph.addVertex(toCui,BiggiFactory.UI,toCui)
 
-                bGraph.addEdge(null,from,to,rel,"uttIds","umls","count",new java.lang.Integer(1))
+                val edge = bGraph.addEdge(null,from,to,rel)
+                edge.setProperty(BiggiFactory.SOURCE,"umls")
+
             }
 
             counter += 1

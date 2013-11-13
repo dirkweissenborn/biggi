@@ -7,10 +7,18 @@ import org.apache.commons.logging.LogFactory
 
 class MachineOutputParser extends RegexParsers {
 
+    override def skipWhitespace = false
+
     private final val LOG = LogFactory.getLog(this.getClass)
 
-    val singleQuote:Parser[String] = "'" ~> """(\\'|[^']|''|'(?![,\[\]()]))*""".r <~ "'"
-    val doubleQuote:Parser[String] = "\"" ~> """(\\"|[^"]|""|"(?![,\[\]()]))*""".r <~ "\""
+    val singleQuote:Parser[String] = "'" ~> """(\\'|[^']|''|'(?![,\[\]()]))*""".r <~ "'" /*^^ {
+        case chars =>
+            chars.mkString
+    } */
+    val doubleQuote:Parser[String] = "\"" ~> """(\\"|[^"]|""|"(?![,\[\]()]))*""".r <~ "\"" /*^^ {
+        case chars =>
+            chars.mkString
+    } */                                      //"""(\\"|[^"]|""|"(?![,\[\]()]))*""".r         """(\\"|[^"]|""|"(?![,\])]))""".r
     val symbol:Parser[String] = """[^,\n()\[\]]*""".r
     val number:Parser[String] = """-?\d+""".r
     val symbolOrQuote:Parser[String] = singleQuote | symbol
@@ -23,7 +31,7 @@ class MachineOutputParser extends RegexParsers {
         rep("\n") ~> ("args" ~> """[^\n]+\n""".r).? ~>
         ("aas" ~> """[^\n]+\n""".r).? ~>
         ("neg_list" ~> """[^\n]+\n""".r).? ~>
-        "utterance(" ~> singleQuote ~ "," ~ doubleQuote ~ "," ~ symbol ~ "," ~ stringList ~ ").\n" ~
+        "utterance(" ~> singleQuote ~ "," ~ doubleQuote ~ "," ~ symbol ~ "," ~ """\[[^\]]*\]""".r ~ ").\n" ~
         phrases <~ "'EOU'." <~ rep("\n") ^^ {
             case id ~ "," ~ text ~ "," ~ positionalInfo ~ "," ~ _ ~ _ ~ mmPhrases => {
                 val Array(start,length) = positionalInfo.split("/",2)
@@ -44,7 +52,7 @@ class MachineOutputParser extends RegexParsers {
 
     def candidates:Parser[List[MMCandidate]] =
         "candidates(" ~> number ~> "," ~> number ~> "," ~> number ~> "," ~> number ~> "," ~>
-        "[" ~> repsep(candidate,",") <~ "])."
+        "[" ~> repsep(candidate,",") <~ "]).\n"
 
     //ev(-856,'C0183413','SPECULA, OPHTHALMIC','SPECULA, OPHTHALMIC',[ophthalmic,specula],[medd],[[[2,2],[1,1],2],[[3,3],[2,2],1]],yes,no,['SPN'],[168/12],0)
     def candidate:Parser[MMCandidate] =
@@ -59,16 +67,16 @@ class MachineOutputParser extends RegexParsers {
                     (start.toInt,length.toInt)
                 })
 
-                MMCandidate(score.toInt,cui,semtypes,rPositions)
+                MMCandidate(score.toInt,cui,preferredName,semtypes,rPositions)
             }
 
         }
 
     def mappings:Parser[List[MMMapping]] = if(withMappings){
-        "mappings([" ~> repsep(mapping,",") <~ "])."
+        "mappings([" ~> repsep(mapping,",") <~ "]).\n"
     }
     else {
-        "mappings[^\n]+".r  ^^ {
+        "mappings[^\n]+\n".r  ^^ {
             case _ => List[MMMapping]()
         }
     }
@@ -85,14 +93,21 @@ class MachineOutputParser extends RegexParsers {
     var withMappings = true
     def parse(s: String, withMappings: Boolean = true) = {
         this.withMappings = withMappings
-        val utt = parseAll(utterance, s) match {
-            case Success(xss, _) => xss
-            case other => {
-                LOG.warn("syntax error: " + other)
-                null
+        var utt:MMUtterance = null
+        try {
+            utt = parseAll(utterance, s) match {
+                case Success(xss, _) => xss
+                case other => {
+                    LOG.warn("syntax error: " + other)
+                    null
+                }
             }
-        }
 
+            utt
+        }
+        catch {
+            case e:Throwable => LOG.error(e.getMessage)
+        }
         utt
     }
 
@@ -107,7 +122,7 @@ case class MMUtterance(pmid:String,section:String,num:Int,text:String,startPos:I
 
 case class MMPhrase(start:Int,length:Int, candidates:List[MMCandidate], mappings:List[MMMapping])
 
-case class MMCandidate(score:Int,cui:String, semtypes:List[String], positions:List[(Int,Int)])
+case class MMCandidate(score:Int,cui:String, preferredName:String, semtypes:List[String], positions:List[(Int,Int)])
 
 case class MMMapping(score:Int,cuis:List[String])
 
@@ -116,7 +131,8 @@ object MachineOutputParser {
         val parser = new MachineOutputParser
         val input = Source.fromFile("shit").mkString
 
-        val utt = parser.parse(input)
-        utt
+        val utt = parser.parse(input,false)
+
+        System.exit(0)
     }
 }

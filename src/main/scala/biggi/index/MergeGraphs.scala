@@ -1,13 +1,15 @@
 package biggi.index
 
-import java.io.File
-import com.thinkaurelius.titan.core.TitanFactory
-import com.tinkerpop.blueprints.{Direction}
+import java.io.{FileWriter, PrintWriter, File}
+import com.thinkaurelius.titan.core.{TitanGraph, TitanFactory}
+import com.tinkerpop.blueprints.{Vertex, Graph, Direction}
 import scala.collection.JavaConversions._
 import com.tinkerpop.blueprints.Query.Compare
 import org.apache.commons.logging.LogFactory
 import biggi.util.BiggiFactory
-import scala.collection.mutable
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.{Await, Future}
+import scala.concurrent.duration.Duration
 
 /**
  * @author dirk
@@ -18,12 +20,15 @@ object MergeGraphs {
 
     private final val LOG = LogFactory.getLog(getClass)
 
+    private final var cuiIdMap =  Map[String,AnyRef]()
+
     def main(args:Array[String]) {
         val inDir = new File(args(0))
         val outDir = new File(args(1))
+        val ignoreDuplicates = args(1) == "true"
 
-        val _override = if(args.size > 2)
-            args(2) == "override"
+        val _override = if(args.size > 3)
+            args(3) == "override"
         else
             false
 
@@ -45,105 +50,132 @@ object MergeGraphs {
         }
 
         val titanConf = BiggiFactory.getGraphConfiguration(outDir)
-        //titanConf.setProperty("storage.batch-loading","true")
-        //titanConf.setProperty("storage.transactions","false")
+        titanConf.setProperty("storage.buffer-size","2048")
+        titanConf.setProperty("ids.block-size","600000")
+        titanConf.setProperty("storage.transaction",false)
+        titanConf.setProperty("storage.batch-loading",true)
 
         val bigGraph = TitanFactory.open(titanConf)
         if(newGraph) {
            BiggiFactory.initGraph(bigGraph)
+        } else
+            bigGraph.getVertices.foreach(vertex => cuiIdMap += vertex.getProperty[String](BiggiFactory.UI) -> vertex.getId)
+
+        { //write configuration
+            val pw = new PrintWriter(new FileWriter(new File(outDir,"graph.config")))
+            pw.println(BiggiFactory.printGraphConfiguration(outDir))
+            pw.close()
         }
 
         LOG.info("Merging into: "+ outDir.getAbsolutePath)
 
-        val cuiIdMap = mutable.Map[String,AnyRef]()
-        inDir.listFiles().foreach(indexDir => {
-            LOG.info("Merging: "+indexDir.getAbsolutePath)
+        val files = inDir.listFiles().iterator
+
+        def getGraphVertices(indexDir:File) = Future {
             val smallConf = BiggiFactory.getGraphConfiguration(indexDir)
             smallConf.setProperty("storage.transactions","false")
-            smallConf.setProperty("storage.read-only","true")
+            //smallConf.setProperty("storage.read-only","true")
             val smallGraph = TitanFactory.open(smallConf)
 
-            smallGraph.query().vertices().iterator().foreach(fromSmall => {
-                val fromCui = fromSmall.getProperty[String]("cui")
+            (smallGraph,smallGraph.getVertices.iterator(),indexDir)
+        }
 
-                val fromId = cuiIdMap.getOrElse(fromCui,null)
+        var nextGraphVertices = getGraphVertices(files.next())
+        while(nextGraphVertices != null){
+            try {
+                val (smallGraph,vertices,indexDir) = Await.result(nextGraphVertices,Duration.Inf)
+                if(files.hasNext)
+                    nextGraphVertices = getGraphVertices(files.next())
+                else
+                    nextGraphVertices = null
 
-                val from =
-                    if(fromId != null)
-                        bigGraph.getVertex(fromId)
-                    else {
-                        val it1 = if(!newGraph) bigGraph.query.has("cui", Compare.EQUAL, fromCui).limit(1).vertices() else null
-                        if (!newGraph && !it1.isEmpty)
-                            it1.head
+                var counter = 0
+
+                LOG.info("Merging from: "+ indexDir.getAbsolutePath)
+
+                vertices.foreach(fromSmall => {
+                    val fromCui = fromSmall.getProperty[String](BiggiFactory.UI)
+
+                    val fromId = cuiIdMap.get(fromCui)
+
+                    val from =
+                        if(fromId.isDefined)
+                            bigGraph.getVertex(fromId.get)
                         else {
-                            val f = bigGraph.addVertex(null)
-                            f.setProperty("cui", fromCui)
-                            val fromSemTypes = fromSmall.getProperty[String]("semtypes")
-                            if(fromSemTypes ne null)
-                                f.setProperty("semtypes", fromSemTypes)
-                            cuiIdMap += fromCui -> f.getId
-                            f
+                            val v = addVertex(newGraph, bigGraph, fromCui, fromSmall)
+                            cuiIdMap += fromCui -> v.getId
+                            v
+                        }
+
+                    var smallEdges = fromSmall.getEdges(Direction.OUT).iterator().toList.groupBy(e => {
+                        if(e.getLabel != BiggiFactory.EDGE)
+                            (e.getLabel,e.getVertex(Direction.IN).getProperty[String](BiggiFactory.UI))
+                        else
+                            (e.getProperty[String](BiggiFactory.LABEL),e.getVertex(Direction.IN).getProperty[String](BiggiFactory.UI))
+                    } )
+
+                    if(!ignoreDuplicates)
+                        from.getEdges(Direction.OUT).foreach(bigEdge => {
+                            val key = (bigEdge.getProperty[String](BiggiFactory.LABEL), bigEdge.getVertex(Direction.IN).getProperty[String](BiggiFactory.UI))
+                            smallEdges.get(key) match {
+                                case Some(edges) => {
+                                    bigEdge.setProperty(BiggiFactory.SOURCE,(bigEdge.getProperty[String](BiggiFactory.SOURCE).split(",") ++ edges.flatMap(_.getProperty[String](BiggiFactory.SOURCE).split(","))).toSet.mkString(","))
+                                    smallEdges -= key
+                                }
+                                case None =>
+                            }
+                        } )
+
+                    smallEdges.foreach {
+                        case ((label,toCui),smallEdges) => {
+                            val toId = cuiIdMap.get(toCui)
+
+                            val to =
+                                if(toId.isDefined)
+                                    bigGraph.getVertex(toId.get)
+                                else {
+                                    val v = addVertex(newGraph, bigGraph, toCui, smallEdges.head.getVertex(Direction.IN))
+                                    cuiIdMap += toCui -> v.getId
+                                    v
+                                }
+
+                            val e = bigGraph.addEdge(null,from,to,BiggiFactory.EDGE)
+                            smallEdges.foreach(smallEdge => smallEdge.getPropertyKeys.foreach(key => e.setProperty(key,smallEdge.getProperty(key))))
+                            e.setProperty(BiggiFactory.SOURCE, smallEdges.flatMap(_.getProperty[String](BiggiFactory.SOURCE).split(",")).toSet.mkString(","))
+                            e.setProperty(BiggiFactory.LABEL, label)
                         }
                     }
 
-                fromSmall.getEdges(Direction.OUT).iterator().foreach(e => {
-                    val toSmall = e.getVertex(Direction.IN)
-                    if(!fromSmall.getId.equals(toSmall.getId)) {
-                        val toCui = toSmall.getProperty[String]("cui")
-
-                        val newIds = e.getProperty[String]("uttIds")
-                        val count = e.getProperty[java.lang.Integer]("count")
-                        val rel = e.getLabel
-
-                        val toId = cuiIdMap.getOrElse(toCui,null)
-
-                        val to =
-                            if(toId != null)
-                                bigGraph.getVertex(toId)
-                            else {
-                                val it2 = if(!newGraph) bigGraph.query.has("cui", Compare.EQUAL, toCui).limit(1).vertices()  else null
-
-                                if (!newGraph && !it2.isEmpty)
-                                    it2.head
-                                else {
-                                    val t = bigGraph.addVertex(null)
-                                    t.setProperty("cui", toCui)
-                                    val toSemTypes = toSmall.getProperty[String]("semtypes")
-                                    if(toSemTypes ne null)
-                                        t.setProperty("semtypes", toSemTypes)
-                                    cuiIdMap += toCui -> t.getId
-                                    t
-                                }
-                            }
-
-                        from.getEdges(Direction.OUT, rel).find(_.getVertex(Direction.IN) == to) match {
-                            case Some(edge) => {
-                                try {
-                                    val ids = edge.getProperty[String]("uttIds")
-                                    if(!ids.contains(newIds)) {
-                                        edge.setProperty("count", edge.getProperty[java.lang.Integer]("count") + count)
-                                        edge.setProperty("uttIds", ids + "," + newIds)
-                                    }
-                                }
-                                catch {
-                                    case e: Throwable => LOG.warn("Could not merge edge: "+ edge.getLabel)
-                                }
-                            }
-                            case None => {
-                                val edge = bigGraph.addEdge(null, from, to, rel)
-                                edge.setProperty("uttIds", newIds)
-                                edge.setProperty("count", count)
-                            }
-                        }
+                    counter += 1
+                    if(counter % 10000 == 0) {
+                        LOG.info(counter+" vertices of "+ indexDir.getName+" processed")
+                        bigGraph.commit()
                     }
                 })
-            })
-            smallGraph.shutdown()
-            bigGraph.commit()
-        })
+                Future{smallGraph.shutdown()}
+                bigGraph.commit()
+            } catch {
+                case t:Throwable => LOG.error(t.printStackTrace())
+            }
+        }
         bigGraph.shutdown()
         LOG.info("DONE!")
         System.exit(0)
     }
 
+
+    def addVertex(newGraph: Boolean, graph: Graph, cui: String, smallVertex: Vertex): Vertex = {
+        val it1 = if (!newGraph) graph.query.has(BiggiFactory.UI, Compare.EQUAL, cui).limit(1).vertices() else null
+        if (!newGraph && !it1.isEmpty)
+            it1.head
+        else {
+            val f = graph.addVertex(null)
+            f.setProperty(BiggiFactory.UI, cui)
+            val fromSemTypes = smallVertex.getProperty[String](BiggiFactory.TYPE)
+            if (fromSemTypes ne null)
+                f.setProperty(BiggiFactory.TYPE, fromSemTypes)
+            f.setProperty(BiggiFactory.TEXT, smallVertex.getProperty[String](BiggiFactory.TEXT))
+            f
+        }
+    }
 }

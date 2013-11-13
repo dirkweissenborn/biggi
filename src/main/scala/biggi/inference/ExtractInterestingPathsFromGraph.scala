@@ -27,8 +27,8 @@ object ExtractInterestingPathsFromGraph {
 
         val graph = TitanFactory.open(conf)
 
-        val from = graph.query().has("cui",cui1).limit(1).vertices().head
-        val to = graph.query().has("cui",cui2).limit(1).vertices().head
+        val from = graph.query().has(BiggiFactory.UI,cui1).limit(1).vertices().head
+        val to = graph.query().has(BiggiFactory.UI,cui2).limit(1).vertices().head
 
         val priorityQueue =
             new mutable.PriorityQueue[(List[Element], Double)]()(new Ordering[(List[Element], Double)]{
@@ -50,7 +50,7 @@ object ExtractInterestingPathsFromGraph {
                 result ::= partialPath.reverse
                 var prevVertex :Vertex = null
                 println(result.head.map(_ match {
-                    case v:Vertex => prevVertex = v; v.getProperty("cui")
+                    case v:Vertex => prevVertex = v; v.getProperty(BiggiFactory.UI)
                     case e:Edge => e.getLabel + { if (e.getVertex(Direction.IN).getId == prevVertex.getId) "^-1" else "" }
                 }).reduce(_+" , "+_))
             }
@@ -78,7 +78,7 @@ object ExtractInterestingPathsFromGraph {
                     result ::= path.reverse
                     var prevVertex :Vertex = null
                     println(result.head.map(_ match {
-                        case v:Vertex => prevVertex = v; v.getProperty("cui")
+                        case v:Vertex => prevVertex = v; v.getProperty(BiggiFactory.UI)
                         case e:Edge => e.getLabel + { if (e.getVertex(Direction.IN).getId == prevVertex.getId) "^-1" else "" }
                     }).reduce(_+" , "+_))
                 }
@@ -88,7 +88,7 @@ object ExtractInterestingPathsFromGraph {
         println("Query time: "+time+" milliseconds")
 
        /* result.foreach(p => println(p.map(_ match {
-            case v:Vertex => prevVertex = v; v.getProperty("cui")
+            case v:Vertex => prevVertex = v; v.getProperty(BiggiFactory.UI)
             case e:Edge => e.getLabel + { if (e.getVertex(Direction.IN).getId == prevVertex.getId) "^-1" else "" }
         }).reduce(_+" , "+_)))  */
 
@@ -102,7 +102,7 @@ object ExtractInterestingPathsFromGraph {
             loop("x",
                 (it:LoopBundle[Vertex]) => {it.getLoops <= maxLength && it.getObject.id != to.id && it.getObject.id != from.id && !it.getPath.contains(it.getObject)},
                 (it:LoopBundle[Vertex]) => it.getObject.id == to.id).
-                path({v:Vertex => v("cui")}, {e:Edge => e.getLabel}).toScalaList()
+                path({v:Vertex => v(BiggiFactory.UI)}, {e:Edge => e.getLabel}).toScalaList()
 
         paths.foreach(path => println(path.map(_.toString).reduce(_ + "," + _ )))     */
     }

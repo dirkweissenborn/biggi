@@ -6,9 +6,11 @@ import scala.collection.parallel.mutable.ParArray
 import biggi.util.RexsterClients._
 import java.{lang}
 import java.io.File
-import biggi.model.RelationCountStore
+import biggi.model.CountStore
 import scala.Some
 import biggi.util.RexsterClients.GraphClient
+import biggi.util.BiggiUtils
+import scala.concurrent.Future
 
 
 /**
@@ -16,13 +18,7 @@ import biggi.util.RexsterClients.GraphClient
  *          Date: 10/9/13
  *          Time: 3:31 PM
  */
-object ExtractInterestingPathsFromRexster {
-
-    // from, label, to
-    type Cui = String
-    trait MyElement
-    case class CEdge(from:String, label:String, to:String) extends MyElement
-    case class CVertex(cui:Cui,text:String = "") extends MyElement
+object ExtractInterestingPathsFromRexsterMultipleHosts {
 
     def main(args:Array[String]) {
         val hosts = args(0).split(",")
@@ -30,9 +26,9 @@ object ExtractInterestingPathsFromRexster {
         val toCui = args(2)
         val maxLength = args(3).toInt
         val maxResults = args(4).toInt
-        val relStore:RelationCountStore = if(args.size > 5) {
+        val relStore:CountStore = if(args.size > 5) {
             val relFile = new File(args(5))
-            RelationCountStore.fromFile(relFile)
+            CountStore.fromFile(relFile)
         } else null
 
         extractInterestingPaths(hosts, fromCui, toCui, maxResults, maxLength, relStore)
@@ -40,13 +36,10 @@ object ExtractInterestingPathsFromRexster {
         System.exit(0)
     }
 
-    def extractInterestingPaths(hosts: Array[String], startCui: String, endCui: String, maxResults: Int, maxLength: Int, relStore:RelationCountStore) {
+    def extractInterestingPaths(hosts: Array[String], startCui: String, endCui: String, maxResults: Int, maxLength: Int, relStore:CountStore) {
         val graphClients = createGraphClients(hosts)
         //setup variable bindings
-        graphClients.foreach(c => runScript[Object](c,"",Map("notAllowed" -> seqAsJavaList(notAllowedEdges))))
-
-        val lm1 = new lang.Long(-1)
-        val l0 = new lang.Long(0)
+        graphClients.foreach(c => runScript[Object](c,"",Map("notAllowed" -> setAsJavaSet(notAllowedEdgeLabels))))
 
         //Cui -> graph ids
         val mapping = mutable.Map[Cui, Array[Long]]()
@@ -77,19 +70,19 @@ object ExtractInterestingPathsFromRexster {
             }).reduce(_ ++ _).seq
         }
 
-        //prioritize bigger scores
+        //prioritize smaller scores
         val priorityQueue =
             new mutable.SynchronizedPriorityQueue[(Vector[MyElement], Set[Cui],Double,Cui)]()(new Ordering[(Vector[MyElement], Set[Cui], Double,Cui)] {
                 def compare(x: (Vector[MyElement], Set[Cui], Double,Cui), y: (Vector[MyElement], Set[Cui], Double,Cui)) =
-                    math.signum(x._3 - y._3).toInt
+                    math.signum(y._3 - x._3).toInt
             })
 
-        val startForbidden: Set[ExtractInterestingPathsFromRexster.Cui] = getForbiddenCuis(startCui) ++ getForbiddenCuis(endCui)
+        val startForbidden: Set[Cui] = getForbiddenCuis(startCui) ++ getForbiddenCuis(endCui)
         priorityQueue.enqueue((Vector[MyElement](CVertex(startCui)), startForbidden,0.0, endCui))
         priorityQueue.enqueue((Vector[MyElement](CVertex(endCui)), startForbidden,0.0, startCui))
         var result = List[(Vector[MyElement],Double)]()
 
-        val localRelStore = new RelationCountStore()
+        val localRelStore = new CountStore()
 
         val start = System.currentTimeMillis()
         var time: Long = 0
@@ -135,7 +128,7 @@ object ExtractInterestingPathsFromRexster {
                                     weight += relStore.getTotalCount / globalEdgeCount.toDouble
 
                                 val newPath = (Vector(CVertex(candCui,candName), CEdge(fromCui, label, toCui)) ++ partialPath,
-                                                    forbiddenCuis ++ getForbiddenCuis(candCui) , (weight + score*(partialPath.length/2))/(partialPath.length/2+1), goalCui)
+                                                    forbiddenCuis ++ getForbiddenCuis(candCui) , 1/(weight + 1/score*(partialPath.length/2))/(partialPath.length/2+1), goalCui)
 
                                 if(goalCui == startCui)
                                     toPaths += lastCui -> (newPath._1,newPath._2,newPath._3)
@@ -150,37 +143,39 @@ object ExtractInterestingPathsFromRexster {
 
                 //look at outEdges
                 def explore(out:Boolean) {
+                    val labelKey = BiggiUtils.LABEL
                     val dir = if(out) "outE" else "inE"
                     graphClients.flatMap(client => {
                         val fromId = mapping(lastCui)(client.idx)
                         if (fromId != -1) {
-                                val exec: String = s"g.v($fromId).$dir.filter{!notAllowed.contains(it.label)}.transform{[it.label,it.f_degree,it.t_degree,it.outV.map.next(),it.inV.map.next()]}"
+                            val exec: String = s"g.v($fromId).$dir.filter{!notAllowed.contains(it.$labelKey)}.transform{[it.$labelKey,it.f_degree,it.t_degree,it.outV.map.next(),it.inV.map.next()]}"
                                 runScript[RList[RList[Object]]](client,exec).get
                             }
                         else
                             new RList[RList[Object]]()
-                    }).seq.foreach {
-                        case list => {
-                            val label = list(0).asInstanceOf[String]
-                            val fromSpecDegree = list(1)
-                            val toSpecDegree = list(2)
-                            val from = list(3).asInstanceOf[java.util.Map[String, Object]]
-                            val to = list(4).asInstanceOf[java.util.Map[String, Object]]
+                    }).groupBy(l => (l.get(0),
+                                    l.get(3).asInstanceOf[java.util.Map[String, Object]].get(BiggiUtils.UI).asInstanceOf[Cui],
+                                    l.get(4).asInstanceOf[java.util.Map[String, Object]].get(BiggiUtils.UI).asInstanceOf[Cui])).foreach {
+                        case ((label,fromUI,toUI),list) => {
+                            val fromSpecDegree = list.head(1)
+                            val toSpecDegree = list.head(2)
+                            val from = list.head(3).asInstanceOf[java.util.Map[String, Object]]
+                            val to = list.head(4).asInstanceOf[java.util.Map[String, Object]]
 
                             addEdge(
-                                from("ui").asInstanceOf[Cui],
-                                from.getOrElse("text", "").asInstanceOf[String],
+                                fromUI,
+                                from.getOrElse(BiggiUtils.TEXT, "").asInstanceOf[String],
                                 from.getOrElse("degree", l0).asInstanceOf[java.lang.Long].toInt,
                                 if (fromSpecDegree == null) 0 else fromSpecDegree.asInstanceOf[java.lang.Long].toInt,
                                 from.getOrElse("depth", l0).asInstanceOf[java.lang.Long].toInt,
                                 from.getOrElse("totalDepth", l0).asInstanceOf[java.lang.Long].toInt,
-                                to("ui").asInstanceOf[Cui],
-                                to.getOrElse("text", "").asInstanceOf[String],
+                                toUI,
+                                to.getOrElse(BiggiUtils.TEXT, "").asInstanceOf[String],
                                 to.getOrElse("degree", l0).asInstanceOf[java.lang.Long].toInt,
                                 to.getOrElse("depth", l0).asInstanceOf[java.lang.Long].toInt,
                                 to.getOrElse("totalDepth", l0).asInstanceOf[java.lang.Long].toInt,
                                 if (toSpecDegree == null) 0 else toSpecDegree.asInstanceOf[java.lang.Long].toInt,
-                                label,
+                                label.toString,
                                 out)
                         }
                     }
@@ -229,15 +224,18 @@ object ExtractInterestingPathsFromRexster {
             1 / toSpecDegree)
     }
 
-    def weightEdge(eLabel:String, mapping:mutable.Map[Cui,Array[Long]], fromCui:Cui, toCui:Cui,clients:ParArray[GraphClient], localCounts:RelationCountStore) = {
+    def weightEdge(eLabel:String, mapping:mutable.Map[Cui,Array[Long]], fromCui:Cui, toCui:Cui,clients:ParArray[GraphClient], localCounts:CountStore) = {
+        val labelKey = BiggiUtils.LABEL
         def getStats(cui:Cui, out:Boolean): (Int, Int,Int,Int) = {
             val statistics = clients.map(client => {
-                val dir = if (out) "out" else "in"
+                val dir = if (out) "outE" else "inE"
+                val cdir = if (out) "inV" else "outV"
+
                 val id = mapping(cui)(client.idx)
                 if (id == -1)
                     (0, 0, 0, 0)
                 else {
-                    val exec: String =s"g.v($id).transform{[ it.both.count(), it.depth, it.totalDepth , it.$dir('$eLabel').count()]}.next()"  //s"g.v($id).transform{[ it.$dir('$eLabel').count(), it.depth, it.totalDepth ]}.next()"
+                    val exec: String =s"""g.v($id).transform{[ it.both.fill(new HashSet<String>()).size(), it.depth, it.totalDepth , it.$dir.filter{it.$labelKey == "$eLabel"}.$cdir.fill(new HashSet<String>()).size()]}.next()"""  //s"g.v($id).transform{[ it.$dir('$eLabel').count(), it.depth, it.totalDepth ]}.next()"
                     runScript[RList[java.lang.Long]](client,exec) match {
                         case Some(list) => {
                             var d, td = 0
@@ -268,27 +266,16 @@ object ExtractInterestingPathsFromRexster {
         clients.foreach(client => {
             var id = mapping(fromCui)(client.idx)
             if(id > -1)
-                runScript[Object](client,s"g.v($id).sideEffect{it.degree = $fDegree; it.depth = $fDepth; it.totalDepth = $fTotalDepth}.outE('$eLabel').sideEffect{it.f_degree = $fSpecDegree}")
+                runScript[Object](client,s"""g.v($id).sideEffect{it.degree = $fDegree; it.depth = $fDepth; it.totalDepth = $fTotalDepth}.outE.filter{it.$labelKey == "$eLabel"}.sideEffect{it.f_degree = $fSpecDegree}""")
             id = mapping(toCui)(client.idx)
             if(id > -1)
-                runScript[Object](client,s"g.v($id).sideEffect{it.degree = $tDegree; it.depth = $tDepth; it.totalDepth = $tTotalDepth}.inE('$eLabel').sideEffect{it.t_degree = $tSpecDegree}")
+                runScript[Object](client,s"""g.v($id).sideEffect{it.degree = $tDegree; it.depth = $tDepth; it.totalDepth = $tTotalDepth}.filter{it.$labelKey == "$eLabel"}.sideEffect{it.t_degree = $tSpecDegree}""")
 
         })
 
         calcWeight(fDepth,fTotalDepth,fDegree,fSpecDegree,tDepth,tTotalDepth,tDegree,tSpecDegree)
     }
     
-    def allowEdge(label:String) = !notAllowedEdges.contains(label)
+    def allowEdge(label:String) = !notAllowedEdgeLabels.contains(label)
 
-    val notAllowedEdges = List("same_as","isa","may_be_a","clinically_similar","has_tradename","has_alias")
-
-    private def printPath(path: Vector[ExtractInterestingPathsFromRexster.MyElement], score: Double) {
-        var prevVertex = ""
-        println(path.map {
-            case vertex: CVertex => prevVertex = vertex.cui; if (vertex.text != null && vertex.text != "") vertex.text else vertex.cui
-            case edge: CEdge => edge.label + {
-                if (edge.to == prevVertex) "^-1" else ""
-            }
-        }.reduce(_ + " , " + _) + " " + score)
-    }
 }

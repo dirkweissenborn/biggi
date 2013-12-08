@@ -3,8 +3,9 @@ package biggi.util
 import biggi.enhancer.clearnlp.FullClearNlpPipeline
 import java.util.Properties
 import biggi.model.AnnotatedText
-import biggi.model.annotation.{Sentence}
+import biggi.model.annotation.{Chunk, Sentence}
 import java.io.{FileInputStream}
+import biggi.enhancer.opennlp.OpenNlpChunkEnhancer
 
 
 /**
@@ -19,7 +20,7 @@ object PrintDependencyTree {
           props.load(new FileInputStream("conf/configuration.properties"))
 
           val pipeline = FullClearNlpPipeline.fromConfiguration(props)
-          //val chunker = OpenNlpChunkEnhancer.fromConfiguration(props)
+          val chunker = OpenNlpChunkEnhancer.fromConfiguration(props)
           //val qE =  new QuestionEnhancer(LuceneIndex.fromConfiguration(props,Version.LUCENE_36))
 
           var sentence = ""
@@ -28,17 +29,17 @@ object PrintDependencyTree {
               sentence = readLine()
               val text = new AnnotatedText(sentence)
               pipeline.enhance(text)
-              //chunker.enhance(text)
+              chunker.enhance(text)
               //UmlsEnhancer.enhance(text)
               //qE.enhance(text)
 
 
               text.getAnnotations[Sentence].foreach(s => {
                   println(s.getTokens.map(t => t.coveredText+"_"+t.posTag).mkString(" "))
-                  println(s.dependencyTree.prettyPrint+"\n")
+                  println(s.prettyPrint+"\n")
                   println(s.printRoleLabels)
                   //println(s.getAnnotationsWithin[OntologyEntityMention].map(_.toString).mkString("\t"))
-                  //println(s.getAnnotationsWithin[Chunk].map(_.toString).mkString("\t"))
+                  println(s.getAnnotationsWithin[Chunk].map(_.toString).mkString("\t"))
 
                   println()
               })

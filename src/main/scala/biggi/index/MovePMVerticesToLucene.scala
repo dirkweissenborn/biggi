@@ -5,7 +5,7 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer
 import org.apache.lucene.util.Version
 import org.apache.lucene.index.{IndexWriter, IndexWriterConfig}
 import org.apache.lucene.store.FSDirectory
-import biggi.util.BiggiFactory
+import biggi.util.BiggiUtils
 import com.thinkaurelius.titan.core.TitanFactory
 import scala.collection.JavaConversions._
 import org.apache.lucene.document._
@@ -32,21 +32,21 @@ object MovePMVerticesToLucene {
         val indexWriter = new IndexWriter(fSDirectory, config)
         indexWriter.commit()
 
-        val titanConf = BiggiFactory.getGraphConfiguration(graphDir)
+        val titanConf = BiggiUtils.getGraphConfiguration(graphDir)
         titanConf.setProperty("storage.transactions","false")
         //smallConf.setProperty("storage.read-only","true")
         val graph = TitanFactory.open(titanConf)
 
         var counter = 0
         graph.getVertices.foreach(vertex => {
-            val ui = vertex.getProperty[String](BiggiFactory.UI)
+            val ui = vertex.getProperty[String](BiggiUtils.UI)
             if(ui.contains(".")) {
                 val Array(pmid,section,number) = ui.split("""\.""",3)
                 val doc = new Document
                 doc.add(new StringField("pmid", pmid , Field.Store.YES))
                 doc.add(new StringField("section", section , Field.Store.YES))
                 doc.add(new IntField("number", number.toInt , Field.Store.YES))
-                doc.add(new TextField("text", vertex.getProperty[String](BiggiFactory.TEXT), Field.Store.YES))
+                doc.add(new TextField("text", vertex.getProperty[String](BiggiUtils.TEXT), Field.Store.YES))
 
                 indexWriter.addDocument(doc)
                 graph.removeVertex(vertex)
@@ -54,7 +54,7 @@ object MovePMVerticesToLucene {
                 counter += 1
                 if(counter % 10000 == 0) {
                     indexWriter.commit()
-                    graph.commit
+                    graph.commit()
                     LOG.info(s"$counter vertices removed & written to lucene!")
                 }
             }

@@ -2,7 +2,7 @@ package biggi.statistics
 
 import org.apache.commons.logging.LogFactory
 import java.io.{FileWriter, PrintWriter, File}
-import biggi.util.BiggiFactory
+import biggi.util.BiggiUtils
 import com.thinkaurelius.titan.core.TitanFactory
 import scala.collection.mutable
 import scala.collection.JavaConversions._
@@ -26,7 +26,7 @@ object CollectCoocurenceCountsOfUmlsRelations {
         val relationsFile = new File(args(2))
         val relation = args(3)
 
-        val conf = BiggiFactory.getGraphConfiguration(graphDir)
+        val conf = BiggiUtils.getGraphConfiguration(graphDir)
         conf.setProperty("storage.transactions","false")
         conf.setProperty("storage.read-only","true")
         val g = TitanFactory.open(conf)
@@ -40,7 +40,7 @@ object CollectCoocurenceCountsOfUmlsRelations {
             val Array(toCui,fromCui,rel) = triple.split("\t",3)
             if(rel == relation) {
                 val from = {
-                    val it = g.query().has(BiggiFactory.UI,fromCui).vertices()
+                    val it = g.query().has(BiggiUtils.UI,fromCui).vertices()
                     if(it.isEmpty)
                         None
                     else
@@ -48,7 +48,7 @@ object CollectCoocurenceCountsOfUmlsRelations {
                 }.getOrElse(null)
                 if(from != null) {
                     val to = {
-                        val it = g.query().has(BiggiFactory.UI,toCui).vertices()
+                        val it = g.query().has(BiggiUtils.UI,toCui).vertices()
                         if(it.isEmpty)
                             None
                         else

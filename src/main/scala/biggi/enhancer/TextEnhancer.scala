@@ -3,7 +3,7 @@ package biggi.enhancer
 import biggi.model.AnnotatedText
 import biggi.model.annotation.Annotation
 import akka.actor.ActorDSL._
-import biggi.util.BiggiFactory
+import biggi.util.BiggiUtils
 
 
 /**
@@ -64,7 +64,7 @@ abstract class TextEnhancer {
         })
     }
 
-    val act = actor(BiggiFactory.actorSystem)(new Act {
+    val act = actor(BiggiUtils.actorSystem)(new Act {
         become {
             case text:AnnotatedText => enhance(text); sender ! text
             case texts:List[AnnotatedText] => enhanceBatch(texts); sender ! texts

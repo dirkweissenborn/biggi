@@ -1,7 +1,7 @@
 package biggi.statistics
 
 import java.io.{FileWriter, PrintWriter, File}
-import biggi.util.BiggiFactory
+import biggi.util.BiggiUtils
 import com.thinkaurelius.titan.core.TitanFactory
 import scala.collection.JavaConversions._
 import scala.collection.mutable
@@ -22,7 +22,7 @@ object CollectEdgeCountsOfGraph {
         val outFile = new File(args(1))
 
 
-        val conf = BiggiFactory.getGraphConfiguration(graphDir)
+        val conf = BiggiUtils.getGraphConfiguration(graphDir)
         conf.setProperty("storage.transactions","false")
         conf.setProperty("storage.read-only","true")
         val g = TitanFactory.open(conf)
@@ -32,8 +32,9 @@ object CollectEdgeCountsOfGraph {
 
         g.getEdges.foreach(edge => {
 //            if(edge.getProperty[String]("uttIds") != "umls") {
-            map.getOrElseUpdate(edge.getLabel,0)
-            map(edge.getLabel) += 1
+            val label = edge.getProperty[String](BiggiUtils.LABEL)
+            map.getOrElseUpdate(label,0)
+            map(label) += 1
             counter+=1
             if(counter % 100000 == 0)
                 LOG.info(counter+" edges processed")
@@ -45,9 +46,8 @@ object CollectEdgeCountsOfGraph {
         val pw = new PrintWriter(new FileWriter(outFile))
 
         map.foreach {
-            case (label,count) => {
+            case (label,count) =>
                 pw.println(s"$label\t$count")
-            }
         }
         pw.close()
 

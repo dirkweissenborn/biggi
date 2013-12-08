@@ -1,7 +1,6 @@
 package biggi.model.annotation
 
 import biggi.model.{AnnotatedText, Span}
-import biggi.dependency.{DepNode, DependencyTree}
 
 /**
  * @author dirk
@@ -15,39 +14,47 @@ class Sentence(spans:Array[Span], context:AnnotatedText) extends Annotation(span
 
     def this(begin:Int,end:Int,context:AnnotatedText) = this(Array(new Span(begin,end)),context)
 
-    def dependencyTree = {
-        if (_dependencyTree==null)
-            _dependencyTree = DependencyTree.fromSentence(this)
-        _dependencyTree
+    private class DependencyTree {
+        val root = getTokens.find(_.depTag.dependsOn == 0).get
+
+        def getSubTree(token:Token):List[Token] = {
+            val children = getTokens.filter(_.depTag.dependsOn == token.position).sortBy(_.position)
+            val (head,tail) = children.span(_.position < token.position)
+            head.flatMap(c => getSubTree(c)) ++ List(token) ++ tail.flatMap(c => getSubTree(c))
+        }
     }
 
-    private var _dependencyTree: DependencyTree = null
+    lazy val dependencyTree = new DependencyTree
 
     def printRoleLabels = {
         this.getTokens.flatMap(token => {
             token.srls.map(srl => {
                 var res = ""
                 try {
-                    val head: DepNode = dependencyTree.find((node: DepNode) => node.nodeHead.position.equals(srl.head)).get
-                    val depNode: DepNode = dependencyTree.find((node: DepNode) => node.nodeHead.equals(token)).get
+                    val headToken = getTokens.find(token => token.position.equals(srl.head)).get
 
                     res = srl.label + "("
-                    res += head.tokens.map(_.lemma).mkString(" ") + ","
-                    if (depNode.nodeHead.depDepth > head.nodeHead.depDepth) {
-                        val subtree = dependencyTree.getSubtree(depNode)
-                        res += subtree.nodes.toList.flatMap((node: subtree.NodeT) => node.value.asInstanceOf[DepNode].tokens).sortBy(_.position).map(_.coveredText).mkString(" ")
+                    res += headToken.lemma
+                    if (token.depDepth > headToken.depDepth) {
+                        res += token.lemma
                     }
                     else {
-                        res += depNode.tokens.map(_.lemma).mkString(" ")
+                        res += dependencyTree.getSubTree(token).map(_.lemma).mkString(" ")
                     }
                     res += ")"
                 }
                 catch {
-                    case e => e.printStackTrace()
+                    case e:Throwable => e.printStackTrace()
                 }
                 res
             })
         }).mkString("\t")
+    }
+
+    def prettyPrint = {
+        getTokens.map(token => {
+            ("\t" * token.depDepth)+ token.depTag.dependsOn +token.lemma + ":" + token.depTag.tag + ":" + token.position
+        }).mkString("\n")
     }
 }
 

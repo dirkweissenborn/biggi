@@ -1,7 +1,6 @@
 package biggi.model.annotation
 
 import biggi.model.{Span, AnnotatedText}
-import biggi.dependency.{DepNode}
 
 /**
  * @author dirk
@@ -45,29 +44,11 @@ class Token(spans:Array[Span],context:AnnotatedText, val position:Int) extends A
 
         _depDepth -1
     }
-
-    private type Arg = (String,Token)
-    private type Pred = (String,Token)
-    private type SRole = String
-
-    def prettyPrintRelations: List[(SRole, Pred, Arg)] = {
-        srls.map(srl => {
-            val tree = sentence.dependencyTree
-
-            val pred = tree.find( (node: DepNode) => node.nodeHead.position.equals(srl.head)).get
-
-            val subRoot: DepNode = tree.find((node: DepNode) => node.tokens.contains(this)).get
-            val subtree = tree.getSubtree(subRoot)
-            val arg = subtree.nodes.toList.flatMap((node: subtree.NodeT) => node.value.asInstanceOf[DepNode].tokens).sortBy(_.position).map(_.coveredText).mkString(" ")
-
-            (srl.label,
-                (pred.tokens.map(_.lemma).mkString(" "), pred.nodeHead),
-                (arg,subRoot.nodeHead))
-        })
-    }
 }
 
-case class DepTag(var tag:String, var dependsOn:Int)
+case class DepTag(var tag:String, var dependsOn:Int) {
+    def copy = DepTag(tag,dependsOn)
+}
 
 case class SemanticRoleLabel(head:Int, label:String)
 

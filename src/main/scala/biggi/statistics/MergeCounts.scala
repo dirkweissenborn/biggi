@@ -20,7 +20,7 @@ object MergeCounts {
 
         val files = dir.listFiles()
 
-        val map = mutable.Map[String,Int]()
+        var map = Map[String,Int]()
         LOG.info("Processing "+files.head.getAbsolutePath)
         Source.fromFile(files.head).getLines().foreach(line => {
             val Array(key,count) = line.split("\t",2)
@@ -31,16 +31,15 @@ object MergeCounts {
             LOG.info("Processing "+file.getAbsolutePath)
             Source.fromFile(file).getLines().foreach(line => {
                 val Array(key,count) = line.split("\t",2)
-                map.getOrElseUpdate(key,0)
-                map(key) += count.toInt
+                val c = map.getOrElse(key,0)
+                map += key -> (c+count.toInt)
             })
         })
 
         val pw = new PrintWriter(new FileWriter(outFile))
         map.foreach {
-            case (label,count) => {
+            case (label,count) =>
                 pw.println(s"$label\t$count")
-            }
         }
         pw.close()
 

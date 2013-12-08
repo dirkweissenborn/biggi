@@ -2,15 +2,12 @@ package biggi.index
 
 import java.io.{FileWriter, PrintWriter, File}
 import scala.io.Source
-import com.thinkaurelius.titan.core.{TitanEdge, TitanFactory}
-import com.tinkerpop.blueprints.Query.Compare
+import com.thinkaurelius.titan.core.{TitanFactory}
 import scala.collection.JavaConversions._
 import org.apache.commons.logging.LogFactory
 import com.tinkerpop.blueprints.{Vertex}
-import biggi.util.BiggiFactory
-import scala.collection.mutable
-import com.tinkerpop.blueprints.util.wrappers.batch.{VertexIDType, BatchGraph}
-import scala.util.Random
+import biggi.util.BiggiUtils
+import scala.collection.mutable.Map
 
 /**
  * @author  dirk
@@ -25,6 +22,10 @@ object IndexUmlsRelFromTsvToGraph {
         val tsvFile = new File(args(0))
 
         val graphDir = new File(args(1))
+        val allowedCuis = if(args.size > 2) Source.fromFile(args(2)).getLines().map(_.trim).toSet else Set[String]()
+
+        def allowCui(cui:String) = allowedCuis.isEmpty || allowedCuis.contains(cui)
+
         println("Overriding output directory!")
         def deleteDir(dir:File) {
             dir.listFiles().foreach(f => {
@@ -39,52 +40,75 @@ object IndexUmlsRelFromTsvToGraph {
         if(!graphDir.mkdirs())
             deleteDir(graphDir)
 
-        val conf = BiggiFactory.getGraphConfiguration(graphDir)
+        val conf = BiggiUtils.getGraphConfiguration(graphDir)
+        conf.setProperty("storage.batch-loading","true")
+        conf.setProperty("autotype","none")
         val graph = TitanFactory.open(conf)
         
-        BiggiFactory.initGraph(graph)
+        BiggiUtils.initGraph(graph)
+
+        var cuiIdMap = Map[String,java.lang.Long]()
 
         var counter = 0
 
-        val bGraph = new BatchGraph(graph, VertexIDType.STRING, 1000)
-
         { //write configuration
             val pw = new PrintWriter(new FileWriter(new File(graphDir,"graph.config")))
-            pw.println(BiggiFactory.printGraphConfiguration(graphDir))
+            pw.println(BiggiUtils.printGraphConfiguration(graphDir))
             pw.close()
         }
 
+        var from:Vertex = null
         Source.fromFile(tsvFile).getLines().foreach(line => {
-            val Array(toCui,fromCui,rel) = line.split("\t",3)
+            val Array(fromCui,toCui,rel1,rela) = line.split("\t",4)
 
-            if(allowedRelations.contains(rel)) {
-                var from = bGraph.getVertex(fromCui)
-                if(from == null)
-                    from = bGraph.addVertex(fromCui,BiggiFactory.UI,fromCui)
+            val rel = if(rel1 == "RO") rela else rel1
 
-                var to = bGraph.getVertex(toCui)
-                if(to == null)
-                    to = bGraph.addVertex(toCui,BiggiFactory.UI,toCui)
+            if(allowedRelations.contains(rel) && fromCui != toCui && allowCui(fromCui) && allowCui(toCui)) {
+                if(from == null || from.getProperty[String](BiggiUtils.UI) != fromCui)
+                    from = cuiIdMap.get(fromCui) match {
+                        case Some(id) => graph.getVertex(id)
+                        case None => {
+                            val v = graph.addVertex(null)
+                            v.setProperty(BiggiUtils.UI,fromCui)
+                            cuiIdMap += fromCui -> v.getId.asInstanceOf[java.lang.Long]
+                            v
+                        }
+                    }
 
-                val edge = bGraph.addEdge(null,from,to,rel)
-                edge.setProperty(BiggiFactory.SOURCE,"umls")
+                val to = cuiIdMap.get(toCui) match {
+                    case Some(id) => graph.getVertex(id)
+                    case None => {
+                        val v = graph.addVertex(null)
+                        v.setProperty(BiggiUtils.UI,toCui)
+                        cuiIdMap += toCui -> v.getId.asInstanceOf[java.lang.Long]
+                        v
+                    }
+                }
 
+                val edge = graph.addEdge(null,from,to,BiggiUtils.EDGE)
+                edge.setProperty(BiggiUtils.SOURCE,"umls")
+                edge.setProperty(BiggiUtils.LABEL,rel)
             }
 
             counter += 1
             if(counter % 100000 == 0) {
-                bGraph.commit()
+                graph.commit()
                 LOG.info(counter + " relations processed!")
             }
         })
 
-        bGraph.commit()
-        bGraph.shutdown()
+        graph.commit()
+        graph.shutdown()
+        BiggiUtils.saveCuiToID(graphDir,cuiIdMap)
         LOG.info("DONE!")
         System.exit(0)
     }
 
-    private val allowedRelations = Set("germ_origin_of",
+    private val allowedRelations = Set(
+        //RELS
+        "SY", "RN", "RL", "CHD", "SIB", "RQ",
+        //RELA
+        "germ_origin_of",
         "smaller_than",
         "is_qualified_by",
         "has_cell_shape",
@@ -125,7 +149,6 @@ object IndexUmlsRelFromTsvToGraph {
         "partially_excised_anatomy_may_have_procedure",
         "has_owning_section",
         "has_degree",
-        "disease_associated_with_allele",
         "allele_associated_with_disease",
         "has_muscle_insertion",
         "effect_may_be_inhibited_by",
@@ -166,7 +189,6 @@ object IndexUmlsRelFromTsvToGraph {
         "has_primary_segmental_supply",
         "has_physical_state",
         "biological_process_results_from_biological_process",
-        "biological_process_has_result_biological_process",
         "reformulated_to",
         "completely_excised_anatomy_has_procedure",
         "procedure_has_completely_excised_anatomy",
@@ -189,7 +211,6 @@ object IndexUmlsRelFromTsvToGraph {
         "icd_asterisk",
         "disease_has_metastatic_anatomic_site",
         "has_time_modifier",
-        "is_alternative_use",
         "alternatively_used_for",
         "abnormality_associated_with_allele",
         "allele_has_abnormality",
@@ -428,6 +449,7 @@ object IndexUmlsRelFromTsvToGraph {
         "has_finding_site",
         "sib_in_part_of",
         "has_dose_form",
+        "mapped_from",
         "same_as",
         "has_component",
         "has_expanded_form",

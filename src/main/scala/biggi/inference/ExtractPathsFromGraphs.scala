@@ -10,17 +10,21 @@ import com.tinkerpop.gremlin.scala._
 import java.util
 import scala.util.Random
 import biggi.model.CountStore
+import biggi.model.deppath.GraphPathStore
+import scala.collection
+import scala.collection.mutable.ArrayBuffer
 
 /**
  * @author dirk
  *          Date: 10/9/13
  *          Time: 3:31 PM
  */
-object ExtractInterestingPathsFromGraphs {
+object ExtractPathsFromGraphs {
     var edgeStats = Map[CEdge,Map[String,Int]]()
     var graphs:GenSeq[(TitanGraph,util.HashMap[Cui,java.lang.Long])] = null
     var umlsGraph:(TitanGraph,util.HashMap[Cui,java.lang.Long]) = null
     var evalPolicy:EvalPolicy = TestEval
+
 
     def main(args:Array[String]) {
         val graphsDir = new File(args(0))
@@ -28,16 +32,17 @@ object ExtractInterestingPathsFromGraphs {
         val startCui = args(2)
         val endCui = args(3)
         val maxLength = args(4).toInt
-        val maxNrEdgePaths = args(5).toDouble
-        val maxTime = args(6).toInt*1000
-        val degreeStore = CountStore.fromFile(new File(args(7)))
+        //val maxNrEdgePaths = args(5).toDouble
+        val maxTime = args(5).toInt*1000
+        val degreeStore = CountStore.fromFile(new File(args(6)))
+        val output = new File(args(7))
 
-        if(args.size > 8)
+        /*if(args.size > 8)
             evalPolicy = args(8) match {
                 case "scoring" => if(args.size > 9) ScoringEval(new File(args(9))) else ScoringEval()
                 case "no-scoring" => if(args.size > 9) NoScoringEval(new File(args(9))) else NoScoringEval()
                 case _ => TestEval
-            }
+            }  */
 
         umlsGraph = {
             val conf = BiggiUtils.getGraphConfiguration(umlsDir)
@@ -80,20 +85,44 @@ object ExtractInterestingPathsFromGraphs {
             System.exit(1)
         }
 
-        def getForbiddenCuis(cui:Cui) = {
-            val (graph,cuiId) = umlsGraph
+        val start = System.currentTimeMillis()
+        
+        val resultSearchTree = searchCuiPaths(startCui, endCui, degreeStore, maxLength, maxTime)
+        val searchEnd = System.currentTimeMillis()
+
+        val nrOfPaths = resultSearchTree.getLeafs.size
+
+        //val edgePaths = selectEdges(resultSearchTree, maxNrEdgePaths, nrOfPaths, degreeStore)
+        val graphStore = new GraphPathStore
+        storeEdges(resultSearchTree, degreeStore, graphStore)
+        graphStore.serialize(new FileOutputStream(output))
+        //val selectionEnd = System.currentTimeMillis()
+        //evalPolicy.process(edgePaths)
+
+        println("Total time: " + (System.currentTimeMillis() - start) + " milliseconds")
+        println("Search time: " + (searchEnd - start) + " milliseconds")
+        //println("Selection time: " + (selectionEnd - searchEnd) + " milliseconds")
+        println(s"Nr of paths found: $nrOfPaths")
+
+        graphs.foreach(_._1.shutdown())
+        System.exit(0)
+    }
+
+    def searchCuiPaths(startCui: String, endCui: String, degreeStore: CountStore, maxLength: Int, maxTime: Int): SearchTree = {
+        def getForbiddenCuis(cui: Cui) = {
+            val (graph, cuiId) = umlsGraph
             (cuiId.get(cui) match {
                 case null => Set[Cui]()
                 case id =>
                     var set = Set[Cui]()
-                    graph.v(id).->.bothE().filter((e:Edge) => notAllowedEdgeLabels.contains(e.getProperty[String](BiggiUtils.LABEL))).
-                      map((e:Edge) => {
-                        val v = if(e.getVertex(Direction.IN).getId == id) e.getVertex(Direction.OUT)
-                                else e.getVertex(Direction.IN)
+                    graph.v(id).->.bothE().filter((e: Edge) => notAllowedEdgeLabels.contains(e.getProperty[String](BiggiUtils.LABEL))).
+                        map((e: Edge) => {
+                        val v = if (e.getVertex(Direction.IN).getId == id) e.getVertex(Direction.OUT)
+                        else e.getVertex(Direction.IN)
                         set += v.getProperty[String](BiggiUtils.UI)
                         v
-                    }).bothE().filter((e:Edge) => synonymEdgeLabels.contains(e.getProperty[String](BiggiUtils.LABEL))).
-                      sideEffect((e:Edge) => {
+                    }).bothE().filter((e: Edge) => synonymEdgeLabels.contains(e.getProperty[String](BiggiUtils.LABEL))).
+                        sideEffect((e: Edge) => {
                         set += e.getVertex(Direction.IN).getProperty[String](BiggiUtils.UI)
                         set += e.getVertex(Direction.OUT).getProperty[String](BiggiUtils.UI)
                     }).toScalaList()
@@ -101,28 +130,26 @@ object ExtractInterestingPathsFromGraphs {
             }) ++ Set(cui)
         }
 
-        val priorityQueue = new mutable.PriorityQueue[(Path,Cui)]()(new Ordering[(Path,Cui)] {
+        val priorityQueue = new mutable.PriorityQueue[(Path, Cui)]()(new Ordering[(Path, Cui)] {
             def compare(x: (Path, Cui), y: (Path, Cui)) = math.signum(y._1.size - x._1.size)
         })
 
         val startForbidden: Set[Cui] = getForbiddenCuis(startCui) ++ getForbiddenCuis(endCui)
-        val startPath = new Path(startCui,None,Set[Node](),startForbidden - endCui)
+        val startPath = new Path(startCui, None, Set[Node](), startForbidden - endCui)
         priorityQueue.enqueue((startPath, endCui))
         val startSearchTree = new SearchTree(startPath)
 
-        val start = System.currentTimeMillis()
-
-        def allowEdge(forbiddenCuis:Set[Cui], cui:Cui, e:CEdge): Boolean = {
-            val candCui =  if (e.from == cui) e.to else e.from
+        def allowEdge(forbiddenCuis: Set[Cui], cui: Cui, e: CEdge): Boolean = {
+            val candCui = if (e.from == cui) e.to else e.from
             !forbiddenCuis.contains(candCui) &&
                 degreeStore.getCount(candCui) <= 100000 &&
                 graphs.exists(g => g != umlsGraph && g._2.containsKey(candCui)) &&
                 !notAllowedEdgeLabels.contains(e.label)
         }
 
-        val resultSearchTree = new SearchTree(new Path(startCui,None,Set[Node]()))
+        val resultSearchTree = new SearchTree(new Path(startCui, None, Set[Node]()))
 
-        def search(f:Path => Unit,maxTime:Long,searchTree:SearchTree = null) {
+        def search(f: Path => Unit, maxTime: Long, searchTree: SearchTree = null) {
             val start = System.currentTimeMillis()
             var time = l0
             while (!priorityQueue.isEmpty && time < maxTime) {
@@ -131,76 +158,98 @@ object ExtractInterestingPathsFromGraphs {
                 //find neighbours
                 val neighbours =
                     explore(partialPath.cui,
-                            e => { val fc = partialPath.getForbiddenCuis; allowEdge(fc, partialPath.cui, e) },
-                            goalCui)
+                        e => {
+                            val fc = partialPath.getForbiddenCuis; allowEdge(fc, partialPath.cui, e)
+                        },
+                        goalCui)
 
                 neighbours.foreach(candCui => {
                     val newForbidden = {
-                        if(partialPath.size < (maxLength + 1) / 2)
+                        if (partialPath.size < (maxLength + 1) / 2)
                             getForbiddenCuis(candCui)
                         else
                             Set[Cui]()
                     }
-                    val newPath = if(searchTree != null) searchTree.insert(candCui,partialPath,newForbidden)
-                                  else new Path(candCui,Some(partialPath),Set[Node](),newForbidden)
+                    val newPath = if (searchTree != null) searchTree.insert(candCui, partialPath, newForbidden)
+                    else new Path(candCui, Some(partialPath), Set[Node](), newForbidden)
 
                     if (candCui.equals(goalCui)) {
                         resultSearchTree.insert(if (goalCui == startCui) newPath.getBottomUpPath else newPath.getBottomUpPath.reverse)
                     } else if (!newForbidden.contains(goalCui)) {
                         f(newPath)
 
-                        if(newPath.size-1 < (maxLength + 1) / 2)
-                            priorityQueue.enqueue((newPath,goalCui))
+                        if (newPath.size - 1 < (maxLength + 1) / 2)
+                            priorityQueue.enqueue((newPath, goalCui))
                     }
                 })
                 time = System.currentTimeMillis() - start
             }
         }
 
-        search(_ => {}, maxTime/2, startSearchTree)
+        search(_ => {}, maxTime / 2, startSearchTree)
 
-        val endPath = new Path(endCui,None,Set[Node](),startForbidden - startCui)
+        val endPath = new Path(endCui, None, Set[Node](), startForbidden - startCui)
         priorityQueue.enqueue((endPath, startCui))
 
         priorityQueue.clear()
         priorityQueue.enqueue((endPath, startCui))
 
-        search({ case toPath =>
-            startSearchTree.cuiToNode.get(toPath.cui).foreach(_.foreach {
-                case path => {
-                    val nodePath = path.getBottomUpPath
-                    val toNodePath = toPath.getBottomUpPath
-                    if(!nodePath.tail.dropRight(1).exists(node => !toPath.allowedOnPath(node.cui)) &&
-                        !toNodePath.tail.dropRight(1).exists(node => !path.allowedOnPath(node.cui))) {
-                        //MATCH
-                        resultSearchTree.insert(nodePath.reverse ++ toNodePath.tail)
+        search({
+            case toPath =>
+                startSearchTree.cuiToNode.get(toPath.cui).foreach(_.foreach {
+                    case path => {
+                        val nodePath = path.getBottomUpPath
+                        val toNodePath = toPath.getBottomUpPath
+                        if (!nodePath.tail.dropRight(1).exists(node => !toPath.allowedOnPath(node.cui)) &&
+                            !toNodePath.tail.dropRight(1).exists(node => !path.allowedOnPath(node.cui))) {
+                            //MATCH
+                            resultSearchTree.insert(nodePath.reverse ++ toNodePath.tail)
+                        }
                     }
-                }
-            })
-        }, maxTime/2)
-        val searchEnd = System.currentTimeMillis()
-
-        val nrOfPaths = resultSearchTree.getLeafs.size
-
-        val edgePaths = selectEdgePaths(resultSearchTree, maxNrEdgePaths, nrOfPaths, degreeStore)
-        val selectionEnd = System.currentTimeMillis()
-
-        evalPolicy.process(edgePaths)
-
-        println("Total time: " + (System.currentTimeMillis() - start) + " milliseconds")
-        println("Search time: " + (searchEnd - start) + " milliseconds")
-        println("Selection time: " + (selectionEnd - searchEnd) + " milliseconds")
-        println(s"Nr of paths found: $nrOfPaths")
-
-        graphs.foreach(_._1.shutdown())
-        System.exit(0)
+                })
+        }, maxTime / 2)
+        resultSearchTree
     }
 
-    /** gather edges; each "vertex-path" (considering only vertices) can have multiple "edge-paths".
-     *  Each "vertex-path" receives the should be represented with equal nr of edge-paths, s.t. no "vertex-path",
-     *  dominates the others. Each vertex-path is allowed to create total/nrPaths edge-paths doing a random walk. 
-     */
-    def selectEdgePaths(resultSearchTree: SearchTree, maxNrEdgePaths: Double, nrVertexPaths: Int, degreeStore:CountStore): List[List[(Edge, Boolean)]] = {
+    def storeEdges(resultSearchTree: SearchTree, degreeStore:CountStore, pathStore:GraphPathStore) {
+        resultSearchTree.foreach {
+            case vertexPath =>
+                var from = vertexPath.head
+                var tail = vertexPath.tail
+
+                while (!tail.isEmpty) {
+                    val to = tail.head
+                    if(!pathStore.containsPair(from.cui,to.cui)) {
+                        val labelsWithCounts = graphs.flatMap {
+                            case (graph, cuiId) =>
+                                (cuiId.getOrElse(from.cui, lm1), cuiId.getOrElse(to.cui, lm1)) match {
+                                    case (fromId, toId) if fromId >= 0 && toId >= 0 =>
+                                        if (degreeStore.getCount(from.cui) <= degreeStore.getCount(to.cui))
+                                            graph.getVertex(fromId).bothE.filter((e: Edge) => e.getVertex(Direction.IN).getId == toId || e.getVertex(Direction.OUT).getId == toId)
+                                                .toScalaList()
+                                        else
+                                            graph.getVertex(toId).bothE.filter((e: Edge) => e.getVertex(Direction.IN).getId == fromId || e.getVertex(Direction.OUT).getId == fromId)
+                                                .toScalaList()
+                                    case (_, _) => List[Edge]()
+                                }
+                        }.seq.groupBy(edge => {
+                            edge.getProperty[String](BiggiUtils.LABEL) + {
+                                if (edge.getVertex(Direction.OUT).getProperty[String](BiggiUtils.UI) == from.cui) "" else "^-1"
+                            }
+                        }).mapValues(_.map(_.getProperty[String](BiggiUtils.SOURCE).count(_ == ',') + 1).sum)
+
+                        pathStore.addPair(from.cui,to.cui,labelsWithCounts)
+                    }
+
+                    from = to
+                    tail = tail.tail
+                }
+
+            pathStore.addPath(ArrayBuffer.concat(vertexPath.map(_.cui)))
+        }
+    }
+
+    def selectEdges(resultSearchTree: SearchTree, maxNrEdgePaths: Double, nrVertexPaths: Int, degreeStore:CountStore): List[List[(Edge, Boolean)]] = {
         resultSearchTree.foldLeft(List[List[(Edge, Boolean)]]()) {
             case (acc, vertexPath) =>
                 var from = vertexPath.head
@@ -299,7 +348,7 @@ object ExtractInterestingPathsFromGraphs {
 
         calcWeight(fDepth,fTotalDepth,fDegree,fSpecDegree,tDepth,tTotalDepth,tDegree,tSpecDegree)
     }
-    
+
     def getNeighbours(allowEdge: CEdge => Boolean,cui:Cui) = {
         val edges = graphs.map {
             case (g, cuiIdMap) =>
@@ -329,9 +378,9 @@ object ExtractInterestingPathsFromGraphs {
         neighbourCount
     }
 
-    protected[ExtractInterestingPathsFromGraphs] trait EvalPolicy {
+    protected[ExtractPathsFromGraphs] trait EvalPolicy {
         def process(paths: List[List[(Edge,Boolean)]])
-        
+
         protected def printPath(path: List[(Edge, Boolean)],withVertices:Boolean = false): String = {
             val printPath = path.map {
                 case (e, out) =>
@@ -401,7 +450,7 @@ object ExtractInterestingPathsFromGraphs {
         }
     }
 
-    protected[ExtractInterestingPathsFromGraphs] object TestEval extends EvalPolicy {
+    protected[ExtractPathsFromGraphs] object TestEval extends EvalPolicy {
         def process(paths: List[List[(Edge,Boolean)]]) {
             //addParameters(paths)
 
@@ -411,7 +460,7 @@ object ExtractInterestingPathsFromGraphs {
         }
     }
 
-    protected[ExtractInterestingPathsFromGraphs] case class ScoringEval(outFile:File = null) extends EvalPolicy {
+    protected[ExtractPathsFromGraphs] case class ScoringEval(outFile:File = null) extends EvalPolicy {
         def process(paths: List[List[(Edge,Boolean)]]) {
             addParameters(paths)
 
@@ -427,7 +476,7 @@ object ExtractInterestingPathsFromGraphs {
         }
     }
 
-    protected[ExtractInterestingPathsFromGraphs] case class NoScoringEval(outFile:File = null) extends EvalPolicy {
+    protected[ExtractPathsFromGraphs] case class NoScoringEval(outFile:File = null) extends EvalPolicy {
         def process(paths: List[List[(Edge, Boolean)]]) {
             val outStream = if(outFile == null) System.out else new PrintStream(new FileOutputStream(outFile))
             paths.foreach(path => {

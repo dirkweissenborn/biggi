@@ -6,6 +6,7 @@ import scala.collection.concurrent.TrieMap
 import biggi.util.BiggiUtils
 import com.thinkaurelius.titan.core.TitanFactory
 import scala.collection.JavaConversions._
+import biggi.model.deppath.DependencyPath
 
 /**
  * @author dirk
@@ -46,15 +47,56 @@ object CountStore {
     }
 
     def main(args:Array[String]) = {
-        evaluateChangeOfCounts
+        printStatistics
+    }
+
+    def printStatistics{
+        val pathsFile = new File("/ssd/data/totalEdgeCounts.tsv")
+        var all = 0
+
+        var map = Map[String,Int]()
+
+        Source.fromFile(pathsFile).getLines().foreach(line => {
+            val Array(path, ct) = line.split("\t", 2)
+            try {
+                val depPath = DependencyPath.fromString(path).toShortString
+                map += depPath -> (map.getOrElse(depPath,0) + ct.toInt)
+            }
+            catch {
+                case e:Throwable => //skip
+            }
+                all += 1
+        })
+
+        println(s"all: ${map.size}")
+
+        val pw = new PrintWriter(new FileWriter(new File("/ssd/data/normalizedTotalEdges.tsv")))
+        var ct50 = 0
+        var total50 = 0
+        var total = 0
+        map.foreach(el => {
+            pw.println(s"${el._1}\t${el._2}")
+            total += el._2
+            if(el._2 >= 50) {
+                ct50 += 1
+                total50 += el._2
+            }
+
+        })
+        pw.close()
+
+        println(s"total: $total")
+
+        println(s"all over 50: $ct50")
+        println(s"total over 50: $total50")
     }
 
     def evaluateChangeOfCounts {
-        val pathsFile = new File("/data/totalEdgeCounts.tsv")
+        val pathsFile = new File("/ssd/data/totalEdgeCounts.tsv")
         val intervals = new Array[Int](100)
         var all = 0
         var total = 0.0
-        val pw = new PrintWriter(new FileWriter(new File("/data/selectedEdges50.tsv")))
+        val pw = new PrintWriter(new FileWriter(new File("/ssd/data/selectedEdges50.tsv")))
 
         Source.fromFile(pathsFile).getLines().foreach(line => {
             val Array(_, ct) = line.split("\t", 2)

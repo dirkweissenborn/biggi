@@ -10,10 +10,9 @@ import java.util.Properties
 import biggi.enhancer.TextEnhancer
 import biggi.enhancer.clearnlp.FullClearNlpPipeline
 import com.thinkaurelius.titan.core.{TitanGraph, TitanFactory}
-import biggi.model.{Span, PosTag, AnnotatedText}
+import biggi.model.{PosTag, AnnotatedText}
 import biggi.model.annotation._
 import com.tinkerpop.blueprints.{Vertex, Direction}
-import com.tinkerpop.blueprints.Query.Compare
 import scala.concurrent.{ExecutionContext, Await, Future}
 import scala.concurrent.duration.Duration
 import java.util.concurrent.{TimeoutException, TimeUnit}
@@ -451,6 +450,7 @@ object IndexAsGraphFromMMBaseline {
                 //Combine paths and remove tokens which are part of the mentions
                 val path = path1.takeWhile(t => t != token && !toMention.getTokens.contains(t)) ++ List(path2.head) ++ path2.tail.dropWhile(t => fromMention.getTokens.contains(t))
                 val minDepth = path.map(_.depDepth).min
+                //check that path doesn't contain verbs of different parts of the sentence
                 if(!path.exists(t => (t.depTag.tag.matches("advcl|ccomp|csubj|csubjpass") || (t.depTag.tag == "conj" && t.posTag.matches(PosTag.ANYVERB_PATTERN))) && t.depDepth > minDepth))
                     Some(path)
                 else
@@ -553,8 +553,6 @@ object IndexAsGraphFromMMBaseline {
             var result = printOnlyToken(token)
             if(token.depDepth > minDepth || !token.posTag.matches(PosTag.ANYVERB_PATTERN))
                 result += ":"+depTag.tag
-            else
-                result += ":"+token.posTag
 
             var auxTokens:List[Token] =
                 token.sentence.getTokens.filter(t => t.depTag.dependsOn == token.position && (t.depTag.tag.matches("neg|acomp|oprd|aux|auxpass|.*mod|num|nn") || t.lemma == "no"))
@@ -569,7 +567,7 @@ object IndexAsGraphFromMMBaseline {
         val startToken = path.head
         val endToken = path.last
 
-        var result =printToken(startToken._1)(startToken._2).drop(startToken._1.lemma.length+1)
+        var result =printToken(startToken._1)(startToken._2).drop(startToken._1.lemma.length)
         var last = startToken._1
 
         path.tail.dropRight(1).foreach(t => {
@@ -586,7 +584,7 @@ object IndexAsGraphFromMMBaseline {
         else
             result += " -> "
         //clean up, sometimes pubmed also annotates the prepositions
-        result += printToken(endToken._1)(endToken._2).drop(endToken._1.lemma.length+1)
+        result += printToken(endToken._1)(endToken._2).drop(endToken._1.lemma.length)
 
         result
     }

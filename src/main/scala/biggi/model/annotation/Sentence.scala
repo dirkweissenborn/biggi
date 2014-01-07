@@ -14,7 +14,7 @@ class Sentence(spans:Array[Span], context:AnnotatedText) extends Annotation(span
 
     def this(begin:Int,end:Int,context:AnnotatedText) = this(Array(new Span(begin,end)),context)
 
-    private class DependencyTree {
+    class DependencyTree {
         val root = getTokens.find(_.depTag.dependsOn == 0).get
 
         def getSubTree(token:Token):List[Token] = {
@@ -53,7 +53,7 @@ class Sentence(spans:Array[Span], context:AnnotatedText) extends Annotation(span
 
     def prettyPrint = {
         getTokens.map(token => {
-            ("\t" * token.depDepth)+ token.depTag.dependsOn +token.lemma + ":" + token.depTag.tag + ":" + token.position
+            ("\t" * token.depDepth)+ token.depTag.dependsOn +":"  +token.lemma + ":" + token.depTag.tag + ":" + token.position
         }).mkString("\n")
     }
 }

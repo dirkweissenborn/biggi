@@ -11,6 +11,7 @@ import java.util
 import scala.collection.GenSeq
 import scala.collection.JavaConversions._
 import org.apache.commons.logging.LogFactory
+import javax.script.SimpleBindings
 
 /**
  * @author dirk
@@ -79,7 +80,7 @@ object RexsterClients {
         GraphClient(client, session)
     }
 
-    def runScript[T <: Object](client: GraphClient,script:String, bindings:Map[String,_ <: AnyRef] = Map[String,AnyRef]()): Option[T] = {
+    def runScript[T <: Object](client: GraphClient,script:String, bindings:Map[String,_] = Map[String,AnyRef]()): Option[T] = {
         val query = new  ScriptRequestMessage
         query.Session = client.session
         query.metaSetInSession(true)
@@ -109,7 +110,7 @@ object RexsterClients {
             None
     }
 
-    def runScript[T <: Object](clients: GenSeq[GraphClient],script:String, bindings:Map[String,_ <: AnyRef]): GenSeq[Option[T]] = {
+    def runScript[T <: Object](clients: GenSeq[GraphClient],script:String, bindings:Map[String,_]): GenSeq[Option[T]] = {
         clients.map(client => runScript(client,script,bindings))
     }
 

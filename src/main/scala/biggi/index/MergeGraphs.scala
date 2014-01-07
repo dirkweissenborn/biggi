@@ -12,6 +12,7 @@ import scala.concurrent.{Await, Future}
 import scala.collection.mutable.Map
 import scala.concurrent.duration.Duration
 import scala.io.Source
+import biggi.model.deppath.DependencyPath
 
 /**
  * @author dirk
@@ -33,12 +34,11 @@ object MergeGraphs {
                 Source.fromFile(args(4)).getLines().map(_.trim).toSet
             else Set[String]()
         val allowedEdges = if(args.size > 5)
-            Source.fromFile(args(5)).getLines().map(_.trim).toSet
+            Source.fromFile(args(5)).getLines().map(e => DependencyPath.removeAttributes(e.trim)).toSet
         else Set[String]()
 
-        val vbPattern = "VB".r
         def allowCui(cui:String) = allowedCuis.isEmpty || allowedCuis.contains(cui)
-        def allowEdge(label:String) = allowedEdges.isEmpty || allowedEdges.contains(label.replaceAll("""\(.*\)""",""))
+        def allowEdge(label:String) = allowedEdges.isEmpty || allowedEdges.contains(DependencyPath.removeAttributes(label))
 
         var indexedEdges = allowedEdges
 

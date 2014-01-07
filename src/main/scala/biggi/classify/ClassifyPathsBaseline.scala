@@ -15,7 +15,7 @@ import scala.io.Source
  *          Date: 12/6/13
  *          Time: 11:25 AM
  */
-object ClassifyPaths {
+object  ClassifyPathsBaseline {
 
     // Define variable classes
     object DocumentDomain extends CategoricalVectorDomain[String]

@@ -12,31 +12,31 @@ import scala.collection.mutable
 package object inference {
 
     // from, label, to
-    protected[inference] type Cui = String
-    protected[inference] trait MyElement
-    protected[inference] case class CEdge(from:String, label:String, to:String) extends MyElement
-    protected[inference] case class CVertex(cui:Cui,text:String = "") extends MyElement
+    type Cui = String
+    trait MyElement
+    case class CEdge(from:String, label:String, to:String) extends MyElement
+    case class CVertex(cui:Cui,text:String = "") extends MyElement
 
-    protected[inference] val lm1 = new lang.Long(-1)
-    protected[inference] val l0 = new lang.Long(0)
+    val lm1 = new lang.Long(-1)
+    val l0 = new lang.Long(0)
 
-    protected[inference] val synonymEdgeLabels =
+    val synonymEdgeLabels =
         Set("same_as","clinically_similar","has_tradename","has_alias","gene_encodes_gene_product","mapped_from","SY","RL")
-    protected[inference] val notAllowedEdgeLabels =
+    val notAllowedEdgeLabels =
         synonymEdgeLabels ++ Set("isa","may_be_a","CHD","RN","RQ")
 
-    protected[inference] def calcWeight(fromDepth: Int, fromTotalDepth: Int, fromDegree: Int, fromSpecDegree: Int, toDepth: Int, toTotalDepth: Int, toDegree: Int, toSpecDegree: Int): Double = {
+    def calcWeight(fromDepth: Int, fromTotalDepth: Int, fromDegree: Int, fromSpecDegree: Int, toDepth: Int, toTotalDepth: Int, toDegree: Int, toSpecDegree: Int): Double = {
         0.25 * (fromDepth.toDouble / (fromTotalDepth * fromDegree) +
             toDepth.toDouble / (toTotalDepth * toDegree) +
             1.0 / fromSpecDegree +
             1.0 / toSpecDegree)
     }
 
-    protected[inference] def allowEdge(e:Edge) = !notAllowedEdgeLabels.contains(e.getLabel)
+    def allowEdge(e:Edge) = !notAllowedEdgeLabels.contains(e.getLabel)
 
 
 
-    protected[inference] def printPath(path: Vector[MyElement], score: Double) {
+    def printPath(path: Vector[MyElement], score: Double) {
         var prevVertex = ""
         println(path.map {
             case vertex: CVertex => prevVertex = vertex.cui; if (vertex.text != null && vertex.text != "") vertex.text else vertex.cui
@@ -46,9 +46,9 @@ package object inference {
         }.reduce(_ + " , " + _) + " " + score)
     }
 
-    protected[inference] type Path = Node
+    type Path = Node
 
-    protected[inference] class Node(val cui:Cui,val parent:Option[Node],var children:Set[Node] = Set[Node](),private val forbiddenCuis:Set[Cui] = Set[Cui]()) extends Cloneable{
+    class Node(val cui:Cui,val parent:Option[Node],var children:Set[Node] = Set[Node](),private val forbiddenCuis:Set[Cui] = Set[Cui]()) extends Cloneable{
         lazy val size:Int = parent match {
             case None => 1
             case Some(p) => 1+ p.size
@@ -68,7 +68,7 @@ package object inference {
         def clone(parent:Option[Node]) = new Node(cui,parent,Set[Node](),forbiddenCuis)
     }
 
-    protected[inference] class SearchTree(val root:Node) extends Traversable[List[Node]] {
+    class SearchTree(val root:Node) extends Traversable[List[Node]] {
         assert(root.parent == None)
         var cuiToNode = Map[Cui,Set[Node]](root.cui -> Set(root))
 

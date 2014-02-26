@@ -53,7 +53,6 @@ object IndexAsGraphFromMMBaseline {
 
     private val LOG = LogFactory.getLog(getClass)
 
-    private var mmoToXml = ""
     private var depParser:TextEnhancer = null
 
     private final var cuiIdMap = mutable.Map[String,java.lang.Long]()
@@ -61,7 +60,6 @@ object IndexAsGraphFromMMBaseline {
     private var indexWriter:IndexWriter = null
 
     def main(args:Array[String]) {
-
         val inputFile: String = args(0)
         val is = new GZIPInputStream(new FileInputStream(inputFile))
         val graphDir = new File(args(1))
@@ -467,7 +465,7 @@ object IndexAsGraphFromMMBaseline {
         if(!path.isEmpty){
             var resultPath = path.map(t => (t,t.depTag.copy))
 
-            //just consider paths in with at least one verbal form
+            //just consider paths with at least one verbal form
             if(resultPath.exists(_._1.posTag.matches(PosTag.ANYVERB_PATTERN))) {
                 //Clean conj and appos sequences
                 val startToken = resultPath.head
@@ -530,8 +528,8 @@ object IndexAsGraphFromMMBaseline {
 
 
     def printOnlyToken(token: Token): String = {
-        val result = if (token.posTag == PosTag.Cardinal_number) token.coveredText else token.lemma
-        result.replaceAll("""["'´`{}]""","")
+        var result = if (token.posTag == PosTag.Cardinal_number) token.coveredText else token.lemma
+        result = result.replaceAll("""["'´`{}()]""","")
         result
     }
 
@@ -551,7 +549,7 @@ object IndexAsGraphFromMMBaseline {
         val minDepth = path.map(_._1.depDepth).min
         def printToken(token:Token)(depTag:DepTag = token.depTag):String = {
             var result = printOnlyToken(token)
-            if(token.depDepth > minDepth || !token.posTag.matches(PosTag.ANYVERB_PATTERN))
+            if(token.depDepth > minDepth)
                 result += ":"+depTag.tag
 
             var auxTokens:List[Token] =
@@ -567,7 +565,7 @@ object IndexAsGraphFromMMBaseline {
         val startToken = path.head
         val endToken = path.last
 
-        var result =printToken(startToken._1)(startToken._2).drop(startToken._1.lemma.length)
+        var result =printToken(startToken._1)(startToken._2).substring(printOnlyToken(startToken._1).length)
         var last = startToken._1
 
         path.tail.dropRight(1).foreach(t => {
@@ -584,7 +582,7 @@ object IndexAsGraphFromMMBaseline {
         else
             result += " -> "
         //clean up, sometimes pubmed also annotates the prepositions
-        result += printToken(endToken._1)(endToken._2).drop(endToken._1.lemma.length)
+        result += printToken(endToken._1)(endToken._2).substring(printOnlyToken(endToken._1).length)
 
         result
     }

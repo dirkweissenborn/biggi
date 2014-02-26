@@ -52,10 +52,10 @@ object DependencyPath extends RegexParsers {
         }
     }
 
-    private val symbol: Parser[String] = "(".? ~> """(\d+(\.\d+)?:\d+(\.\d+)?)|([^ :()]*)""".r <~ ")".?
+    private val symbol: Parser[String] = """(\d+(\.\d+)?:\d+(\.\d+)?)|[^ :()]+""".r
     private val depTag: Parser[String] = """[a-zA-Z]+""".r
 
-    private def depPath(inverse:Boolean):Parser[DependencyPath] = (depNode(Some(true)) <~ " -> ").* ~ depNode(None) ~ (" <- ".r ~> depNode(Some(false))).* ~ ("^-1").? ^^ {
+    private def depPath(inverse:Boolean):Parser[DependencyPath] = (depNode(Some(true)) <~ " -> ").* ~ rootNode ~ (" <- ".r ~> depNode(Some(false))).* ~ "^-1".? ^^ {
         case upNodes ~ root ~ downNodes ~ invSign =>
             val nodes = upNodes ++ List(root) ++ downNodes
             def negation(node:DependencyNode):Boolean = node.tag == "neg" || node.lemma == "no"
@@ -65,37 +65,55 @@ object DependencyPath extends RegexParsers {
             dp
     }
 
-    private def depNode(up:Option[Boolean]):Parser[DependencyNode] = (symbol <~ ":+".r).? ~ depTag ~ attr.? ^^ {
-        case lemmaOption ~ tag ~ attr =>
-            var lemma = lemmaOption.getOrElse("")
-            var depTag = tag
-            if(lemma.isEmpty && up == None) {
-                lemma = tag
-                depTag = ""
-            }
+    private def depNode(up:Option[Boolean]):Parser[DependencyNode] = (symbol.? <~ ":+".r).? ~ depTag.? ~ attr.? ^^ {
+        case lemmaOption ~ tagOption ~ attr =>
+            val lemma = lemmaOption.getOrElse(None).getOrElse("")
+            DependencyNode(lemma,tagOption.getOrElse(""),attr.getOrElse(List[DependencyNode]()),up)
+    }
 
-            DependencyNode(lemma,tag,attr.getOrElse(List[DependencyNode]()),up)
+    private def rootNode:Parser[DependencyNode] = symbol.? ~ attr.? ^^ {
+        case lemma ~ attr =>
+            DependencyNode(lemma.getOrElse(""),"",attr.getOrElse(List[DependencyNode]()),None)
     }
 
     private def attr: Parser[List[DependencyNode]] = "(" ~> rep1sep(depNode(None), " ") <~ ")"
 
-    private def simpleRelation: Parser[DependencyPath] = symbol ^^ {
-        case rel => new DependencyPath(List(DependencyNode(rel,"rel")))
+    private def simpleRelation: Parser[DependencyPath] = symbol ~ ( ":+".r ~> depTag).? ^^ {
+        case rel ~ tag => new DependencyPath(List(DependencyNode(rel,tag.getOrElse("rel"))))
     }
 
-    def removeAttributes(depPath:String) = {
-        var result = depPath
-        var temp = ""
-        while(temp != result) {
-            temp = result
-            result = result.replaceAll("""\([^)]*\)""","")
-        }
+
+    //faster than parsing
+    def removeAttributes(depPath:String, withNeg:Boolean = false, inverse:Boolean = false) = {
+        var openParenths = 0
+        var directAttributes = ""
+        var result = depPath.filter((c:Char) => {
+            c match {
+                case '(' => openParenths += 1
+                case ')' => openParenths -= 1
+                case _ =>
+            }
+            if(openParenths == 1 && c != '(')
+                directAttributes += c
+            openParenths == 0 && c != ')'
+        })
+
+        if(withNeg && !""":neg|[^a-zA-Z]no?[^a-zA-Z]""".r.findAllIn(directAttributes).matchData.isEmpty)
+            result = "neg_"+result
+
+        if(inverse)
+            result += "^-1"
+
         result
     }
 
     def main(args:Array[String]) {
-        val p = parseAll(depPath(false),"pobj(human:amod) <- irradiate:partmod <- with:prep <- pobj")
-        p
+        var p = parseAll(simpleRelation,"relation:rel")
+        println(p)
+        p = parseAll(depPath(false),"(non-hydrolyzable:amod paf:nn(:npadvmod(1:num))) -> add <- to:prep <- pobj")
+        println(p)
+        p = parseAll(depPath(false),"(:hmod) -> excrete <- dobj")
+        println(p)
     }
 }
 

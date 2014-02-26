@@ -13,9 +13,9 @@ import biggi.model.deppath.DependencyPath
  *          Date: 11/11/13
  *          Time: 10:37 AM
  */
-class CountStore {
+class CountStore  {
 
-    private var trie = TrieMap[String,Int]()
+    var trie = TrieMap[String,Int]()
     private var totalCount = 0
 
     def getCount(el:String) = {
@@ -31,6 +31,7 @@ class CountStore {
     }
 
     def getTotalCount = totalCount
+
 }
 
 object CountStore {
@@ -47,71 +48,43 @@ object CountStore {
     }
 
     def main(args:Array[String]) = {
-        printStatistics
+        evaluateChangeOfCounts
+        println(Source.fromFile("/ssd/data/selectedEdges50.tsv").getLines.map(_.split("\t")(1).toInt).sum)
     }
 
-    def printStatistics{
+    def evaluateChangeOfCounts {
         val pathsFile = new File("/ssd/data/totalEdgeCounts.tsv")
-        var all = 0
+        val intervals = new Array[Int](100)
+        var total = 0.0
 
         var map = Map[String,Int]()
 
         Source.fromFile(pathsFile).getLines().foreach(line => {
             val Array(path, ct) = line.split("\t", 2)
             try {
-                val depPath = DependencyPath.fromString(path).toShortString
-                map += depPath -> (map.getOrElse(depPath,0) + ct.toInt)
+                val depPath = DependencyPath.removeAttributes(path)
+                if(!depPath.contains("(") && !depPath.contains(")"))
+                    map += depPath -> (map.getOrElse(depPath,0) + ct.toInt)
             }
             catch {
                 case e:Throwable => //skip
             }
-                all += 1
         })
+        val all = map.size
 
-        println(s"all: ${map.size}")
-
-        val pw = new PrintWriter(new FileWriter(new File("/ssd/data/normalizedTotalEdges.tsv")))
-        var ct50 = 0
-        var total50 = 0
-        var total = 0
-        map.foreach(el => {
-            pw.println(s"${el._1}\t${el._2}")
-            total += el._2
-            if(el._2 >= 50) {
-                ct50 += 1
-                total50 += el._2
-            }
-
-        })
-        pw.close()
-
-        println(s"total: $total")
-
-        println(s"all over 50: $ct50")
-        println(s"total over 50: $total50")
-    }
-
-    def evaluateChangeOfCounts {
-        val pathsFile = new File("/ssd/data/totalEdgeCounts.tsv")
-        val intervals = new Array[Int](100)
-        var all = 0
-        var total = 0.0
         val pw = new PrintWriter(new FileWriter(new File("/ssd/data/selectedEdges50.tsv")))
 
-        Source.fromFile(pathsFile).getLines().foreach(line => {
-            val Array(_, ct) = line.split("\t", 2)
-            all += 1
+        map.foreach{ case (path,count) =>
             try {
-                val count = ct.toInt
                 total += count
                 if (count < 1000)
                     intervals(count / 10) += 1
                 if (count >= 50)
-                    pw.println(line)
+                    pw.println(path + "\t" + count)
             } catch {
                 case t: Throwable =>
             }
-        })
+        }
         pw.close()
         var acc = 0
         (0 until 100).map(i => {
@@ -120,7 +93,7 @@ object CountStore {
         }).foreach(inter => println(inter._1 + "\t" + inter._2 + "\t" + inter._3))
         println()
         println("total: " + total)
-        println("all: " + all)
+        println(s"all: $all")
         println("avg.: " + (total / all))
     }
 

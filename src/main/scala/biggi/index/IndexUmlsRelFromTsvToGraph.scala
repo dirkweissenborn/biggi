@@ -63,16 +63,15 @@ object IndexUmlsRelFromTsvToGraph {
 
             val rel = if(rel1 == "RO") rela else rel1
 
-            if(allowedRelations.contains(rel) && fromCui != toCui && allowCui(fromCui) && allowCui(toCui)) {
+            if(allowedRelations.contains(rel) && fromCui != toCui && allowCui(fromCui) && allowCui(toCui) && (rel != "SIB" || fromCui < toCui)) {
                 if(from == null || from.getProperty[String](BiggiUtils.UI) != fromCui)
                     from = cuiIdMap.get(fromCui) match {
                         case Some(id) => graph.getVertex(id)
-                        case None => {
+                        case None =>
                             val v = graph.addVertex(null)
                             v.setProperty(BiggiUtils.UI,fromCui)
                             cuiIdMap += fromCui -> v.getId.asInstanceOf[java.lang.Long]
                             v
-                        }
                     }
 
                 val to = cuiIdMap.get(toCui) match {
@@ -108,11 +107,6 @@ object IndexUmlsRelFromTsvToGraph {
         //RELS
         "SY", "RN", "RL", "CHD", "SIB", "RQ",
         //RELA
-        "germ_origin_of",
-        "smaller_than",
-        "is_qualified_by",
-        "has_cell_shape",
-        "larger_than",
         "chromosomal_location_of_wild-type_gene",
         "cell_shape_of",
         "imaged_anatomy_has_procedure",
@@ -140,7 +134,6 @@ object IndexUmlsRelFromTsvToGraph {
         "has_origin",
         "procedure_may_have_completely_excised_anatomy",
         "completely_excised_anatomy_may_have_procedure",
-        "has_adherent",
         "adheres_to",
         "gene_product_has_malfunction_type",
         "procedure_may_have_excised_anatomy",
@@ -161,7 +154,6 @@ object IndexUmlsRelFromTsvToGraph {
         "chemical_or_drug_plays_role_in_biological_process",
         "gene_product_has_abnormality",
         "biological_process_involves_chemical_or_drug",
-        "may_qualify",
         "uses",
         "develops_from",
         "gives_rise_to",

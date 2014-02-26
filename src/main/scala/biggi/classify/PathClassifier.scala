@@ -2,7 +2,7 @@ package biggi.classify
 
 import cc.factorie.variable._
 import biggi.model.factorie.HMMModel
-import cc.factorie.la.{Tensor1, Tensor, DenseTensor1}
+import cc.factorie.la.{SparseIndexedTensor1, Tensor1, Tensor, DenseTensor1}
 import cc.factorie.app.classify.backend.{MulticlassClassifier}
 import scala._
 
@@ -55,20 +55,21 @@ class PathClassifierFromModel(val maxLengthOfPath:Int, model:MulticlassClassifie
 }
 
 object PathClassifierFromModel {
-    def seqToFeature(input: PathFeatureVariable, maxPathLength:Int): DenseTensor1 = {
-        val inpArray = input.value.toArray
-        val dimOfFeatureVectors = inpArray(0).value.length
-        Tensor.tabulate(maxPathLength * dimOfFeatureVectors)(i => {
-            val feature = i / dimOfFeatureVectors
-            if (feature >= inpArray.size)
-                0.0
-            else
-                inpArray(feature).value(i % dimOfFeatureVectors)
-        })
+    def seqToFeature(input: PathFeatureVariable, maxPathLength:Int): Tensor1 = {
+        val dimOfFeatureVectors = input.value.head.domain.dimensionSize
+        new SparseIndexedTensor1(maxPathLength * dimOfFeatureVectors){
+            var i = 0
+            input.value.foreach(featureVector => {
+                featureVector.value.foreachActiveElement{ case (idx,score) => this += (idx + i*dimOfFeatureVectors,score) }
+                i += 1
+            })
+        }
     }
 }
 
-class PairClassifier(pathClassifier:PathClassifier, scoreCombiner: Seq[Tensor1] => Tensor1, evaluatePredictionDetails:Seq[(PathLabelVariable,Tensor1)] => Unit = null) extends MulticlassClassifier[Seq[PathLabelVariable]] {
+trait PairClassifier extends  MulticlassClassifier[Seq[PathLabelVariable]]
+
+class PairFromPathClassifier(pathClassifier:PathClassifier, scoreCombiner: Seq[Tensor1] => Tensor1, evaluatePredictionDetails:Seq[(PathLabelVariable,Tensor1)] => Unit = null) extends PairClassifier {
     def predict(input: Seq[PathLabelVariable]) = {
         val output = input.map(i => (i,pathClassifier.predict(i.features)))
         if(evaluatePredictionDetails != null)
@@ -79,5 +80,6 @@ class PairClassifier(pathClassifier:PathClassifier, scoreCombiner: Seq[Tensor1] 
             scoreCombiner(output.map(_._2))
     }
 }
+
 
 

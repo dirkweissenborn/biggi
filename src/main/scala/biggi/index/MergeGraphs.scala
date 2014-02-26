@@ -40,8 +40,6 @@ object MergeGraphs {
         def allowCui(cui:String) = allowedCuis.isEmpty || allowedCuis.contains(cui)
         def allowEdge(label:String) = allowedEdges.isEmpty || allowedEdges.contains(DependencyPath.removeAttributes(label))
 
-        var indexedEdges = allowedEdges
-
         val newGraph = outDir.mkdirs() || _override || outDir.list().isEmpty
 
         if(_override){
@@ -61,7 +59,7 @@ object MergeGraphs {
 
         val titanConf = BiggiUtils.getGraphConfiguration(outDir)
         titanConf.setProperty("storage.buffer-size","2048")
-        titanConf.setProperty("ids.block-size","70000")
+        titanConf.setProperty("ids.block-size","100000")
         titanConf.setProperty("storage.batch-loading",true)
         titanConf.setProperty("storage.cache-percentage",40)
 
@@ -118,7 +116,7 @@ object MergeGraphs {
 
                 LOG.info("Merging from: "+ indexDir.getAbsolutePath)
                 if(vertices != null) {
-                    vertices.foreach{ case (fromSmall,fromCui) => {
+                    vertices.foreach{ case (fromSmall,fromCui) =>
                         if(!fromCui.contains(".") && allowCui(fromCui)) {
                             val fromId = cuiIdMap.get(fromCui)
 
@@ -142,17 +140,15 @@ object MergeGraphs {
                                 from.getEdges(Direction.OUT).foreach(bigEdge => {
                                     val key = (bigEdge.getProperty[String](BiggiUtils.LABEL), bigEdge.getVertex(Direction.IN).getProperty[String](BiggiUtils.UI))
                                     smallEdges.get(key) match {
-                                        case Some(edges) => {
+                                        case Some(edges) =>
                                             bigEdge.setProperty(BiggiUtils.SOURCE,(bigEdge.getProperty[String](BiggiUtils.SOURCE).split(",") ++ edges.flatMap(_.getProperty[String](BiggiUtils.SOURCE).split(","))).toSet.mkString(","))
                                             smallEdges -= key
-                                        }
                                         case None =>
                                     }
                                 } )
 
-                            smallEdges.
-                                withFilter(edge => allowCui(edge._1._2) &&
-                                                   allowEdge(edge._1._1)).
+                            smallEdges.withFilter(edge => allowCui(edge._1._2) &&
+                                                          allowEdge(edge._1._1)).
                                 foreach {
                                     case ((label,toCui),smallEdges) => {
                                         val toId = cuiIdMap.get(toCui)
@@ -166,12 +162,12 @@ object MergeGraphs {
                                                 v
                                             }
 
-                                        if(!indexedEdges.contains(label)) {
+                                        /*if(!indexedEdges.contains(label)) {
                                             bigGraph.makeLabel(label).manyToMany().make()
                                             indexedEdges += label
-                                        }
+                                        }*/
                                         val e = bigGraph.addEdge(null,from,to,BiggiUtils.EDGE)
-                                        smallEdges.foreach(smallEdge => smallEdge.getPropertyKeys.foreach(key => e.setProperty(key,smallEdge.getProperty(key))))
+                                        smallEdges.foreach(smallEdge => smallEdge.getPropertyKeys.withFilter(k => k != BiggiUtils.SOURCE && k != BiggiUtils.LABEL).foreach(key => e.setProperty(key,smallEdge.getProperty(key))))
                                         e.setProperty(BiggiUtils.SOURCE, smallEdges.flatMap(_.getProperty[String](BiggiUtils.SOURCE).split(",")).toSet.mkString(","))
                                         e.setProperty(BiggiUtils.LABEL, label)
                                     }
@@ -183,7 +179,7 @@ object MergeGraphs {
                                 bigGraph.commit()
                             }
                         }
-                    }}
+                    }
                     smallGraph.shutdown()
                     bigGraph.commit()
 
